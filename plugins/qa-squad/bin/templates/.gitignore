@@ -1,0 +1,14 @@
+# Runtime state and potentially large/sensitive evidence
+run-state.json
+results/
+findings/
+reports/
+evidence/
+inventory/
+hook-state.json
+
+# Keep base documentation/config
+!.gitignore
+!config.json
+!SCHEMA.md
+!project-context.example.md

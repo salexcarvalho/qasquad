@@ -1,0 +1,23 @@
+{
+  "name": "qa-squad",
+  "displayName": "QA Squad",
+  "version": "0.2.0",
+  "description": "Generic autonomous multi-agent QA framework for Claude Code with deterministic coverage enforcement.",
+  "author": {
+    "name": "Sergio Alexandre de Carvalho",
+    "url": "https://github.com/salexcarvalho"
+  },
+  "homepage": "https://github.com/salexcarvalho/qasquad",
+  "repository": "https://github.com/salexcarvalho/qasquad",
+  "license": "MIT",
+  "keywords": [
+    "qa",
+    "testing",
+    "claude-code",
+    "agents",
+    "playwright",
+    "ux",
+    "e2e",
+    "coverage"
+  ]
+}

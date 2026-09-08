@@ -1,0 +1,10 @@
+.DS_Store
+*.pyc
+__pycache__/
+.pytest_cache/
+node_modules/
+.qa/
+.env
+.env.*
+!.env.example
+.rtk/

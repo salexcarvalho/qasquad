@@ -1,0 +1,18 @@
+{
+  "name": "salexcarvalho-claude-plugins",
+  "description": "Claude Code plugins by Sergio Alexandre de Carvalho.",
+  "owner": {
+    "name": "Sergio Alexandre de Carvalho"
+  },
+  "plugins": [
+    {
+      "name": "qa-squad",
+      "source": "./plugins/qa-squad",
+      "description": "Generic autonomous multi-agent QA framework with deterministic coverage enforcement.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Sergio Alexandre de Carvalho"
+      }
+    }
+  ]
+}

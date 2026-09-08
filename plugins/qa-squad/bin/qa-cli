@@ -1,0 +1,633 @@
+#!/usr/bin/env python3
+"""Minimal, dependency-free QA state and coverage CLI.
+
+The CLI owns the deterministic part of a QA audit: the inventory (the
+denominator), the recorded results (the numerator), findings, and the
+completion gate. It intentionally has no third-party dependencies so it can run
+anywhere Claude Code runs.
+
+Design rules:
+  * An item counts as covered only when a result has been persisted for it.
+  * An empty category is never silently treated as complete. It must be
+    explicitly declared empty with a justification, which is auditable.
+  * Coverage measures execution, not quality. A failed test still counts as
+    covered; it is the findings that carry quality signal.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", Path.cwd())).resolve()
+QA = ROOT / ".qa"
+INV = QA / "inventory"
+RES = QA / "results"
+FIND = QA / "findings"
+REPORTS = QA / "reports"
+EVIDENCE = QA / "evidence"
+STATE = QA / "run-state.json"
+CONFIG = QA / "config.json"
+DECLARED_EMPTY = QA / "declared-empty.json"
+
+# Core categories gate audit completion by default.
+CORE_CATEGORIES = ["profiles", "navigation", "features", "forms", "workflows", "permissions"]
+
+# Extended categories give every specialized agent a measurable coverage lane.
+# They are tracked and reported by default, and can be promoted into
+# required_categories when an audit must formally gate on them.
+EXTENDED_CATEGORIES = [
+    "api", "ux", "ui", "responsive", "accessibility",
+    "security", "performance", "resilience", "data-integrity",
+]
+
+KNOWN_CATEGORIES = CORE_CATEGORIES + EXTENDED_CATEGORIES
+
+# Every one of these statuses means "execution happened". Coverage is about
+# execution; quality is carried by findings and by the status breakdown.
+COUNTED = {"passed", "failed", "blocked", "not_applicable"}
+
+# Canonical severities, with the P-scale kept as accepted aliases for
+# backward compatibility with existing audits and reports.
+SEVERITY_ALIASES = {
+    "p0": "critical", "critical": "critical",
+    "p1": "high", "high": "high",
+    "p2": "medium", "medium": "medium",
+    "p3": "low", "low": "low",
+}
+SEVERITY_TO_P = {"critical": "P0", "high": "P1", "medium": "P2", "low": "P3"}
+SEVERITY_ORDER = ["critical", "high", "medium", "low"]
+
+CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def load(path: Path, default=None):
+    if not path.exists():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def ensure_dirs() -> None:
+    for p in [INV, RES, FIND, REPORTS, EVIDENCE / "screenshots", EVIDENCE / "traces", EVIDENCE / "videos"]:
+        p.mkdir(parents=True, exist_ok=True)
+
+
+def require_initialized() -> None:
+    if not STATE.exists():
+        raise SystemExit("QA state not found. Run 'qa-cli init' first.")
+
+
+def validate_category(name: str) -> str:
+    if not CATEGORY_RE.match(name):
+        raise SystemExit(
+            f"Invalid category '{name}'. Use lowercase slugs such as: {', '.join(KNOWN_CATEGORIES)}"
+        )
+    return name
+
+
+def normalize_severity(value: str) -> str:
+    key = (value or "").strip().lower()
+    if key not in SEVERITY_ALIASES:
+        raise SystemExit(
+            "Invalid severity. Use critical|high|medium|low (P0|P1|P2|P3 are accepted aliases)."
+        )
+    return SEVERITY_ALIASES[key]
+
+
+def init(args) -> None:
+    ensure_dirs()
+    # Materialize the project-local QA templates shipped with the plugin.
+    templates = Path(__file__).resolve().parent / "templates"
+    if templates.exists():
+        for name in ["SCHEMA.md", "project-context.example.md", ".gitignore"]:
+            src = templates / name
+            dst = QA / name
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
+    if not CONFIG.exists():
+        save(CONFIG, {
+            "required_coverage_percent": 100,
+            "required_categories": CORE_CATEGORIES,
+            "tracked_categories": EXTENDED_CATEGORIES,
+            "strict_navigation_by_profile": True,
+            "required_viewports": ["desktop", "mobile"],
+            "allowed_result_statuses": sorted(COUNTED),
+            "severity_scale": SEVERITY_ORDER,
+            "notes": (
+                "Adapt categories and requirements to the project, but do not lower navigation "
+                "coverage when the audit goal is 100% of menus and submenus. Promote a tracked "
+                "category into required_categories to make the audit gate on it."
+            ),
+        })
+    if not DECLARED_EMPTY.exists():
+        save(DECLARED_EMPTY, {})
+    if not STATE.exists() or args.force:
+        save(STATE, {
+            "status": "active",
+            "started_at": now(),
+            "updated_at": now(),
+            "discovery_complete": False,
+            "discovery_notes": "",
+            "audit_goal": args.goal or "Full generic QA audit",
+            "finished_at": None,
+        })
+    else:
+        state = load(STATE, {}) or {}
+        state["status"] = "active"
+        state["updated_at"] = now()
+        if args.goal:
+            state["audit_goal"] = args.goal
+        save(STATE, state)
+    print(f"QA initialized at {QA}")
+
+
+def inventory_path(cat: str) -> Path:
+    return INV / f"{cat}.json"
+
+
+def normalize_inventory(data):
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"]
+    raise ValueError("Inventory must be a JSON list or an object shaped as {\"items\": [...]}")
+
+
+def add_inventory(args) -> None:
+    ensure_dirs()
+    cat = validate_category(args.category)
+    path = inventory_path(cat)
+    items = normalize_inventory(load(path, []))
+    existing = {str(x.get("id")): x for x in items if x.get("id") is not None}
+    payload = {
+        "id": args.id,
+        "kind": args.kind,
+        "label": args.label,
+        "profile_id": args.profile_id,
+        "route": args.route,
+        "parent_id": args.parent_id,
+        "metadata": json.loads(args.metadata) if args.metadata else {},
+        "discovered_at": now(),
+    }
+    existing[args.id] = payload
+    save(path, {"category": cat, "items": list(existing.values())})
+    # Adding an item to a category contradicts any previous "this category is
+    # empty" declaration, so the declaration is retired automatically.
+    declared = load(DECLARED_EMPTY, {}) or {}
+    if cat in declared:
+        declared.pop(cat)
+        save(DECLARED_EMPTY, declared)
+    print(f"inventory:{cat}:{args.id}")
+
+
+def result_filename(item_id: str) -> str:
+    return hashlib.sha256(item_id.encode("utf-8")).hexdigest()[:24] + ".json"
+
+
+def record(args) -> None:
+    ensure_dirs()
+    cat = validate_category(args.category)
+    if args.status not in COUNTED:
+        raise SystemExit(f"Invalid status '{args.status}'. Use one of: {', '.join(sorted(COUNTED))}")
+    if args.status == "not_applicable" and not args.notes:
+        raise SystemExit("Status 'not_applicable' requires a --notes justification.")
+    if args.status == "blocked" and not args.notes:
+        raise SystemExit("Status 'blocked' requires --notes explaining what blocked execution.")
+    path = RES / cat / result_filename(args.id)
+    data = {
+        "id": args.id,
+        "category": cat,
+        "status": args.status,
+        "tested_at": now(),
+        "profile_id": args.profile_id,
+        "evidence": [e for e in (args.evidence or []) if e],
+        "notes": args.notes or "",
+        "scenario": args.scenario or "",
+        "finding_ids": args.finding_id or [],
+        "tester": args.tester or "claude",
+    }
+    save(path, data)
+    print(f"recorded:{cat}:{args.id}:{args.status}")
+
+
+def add_finding(args) -> None:
+    ensure_dirs()
+    severity = normalize_severity(args.severity)
+    fid = args.id or (
+        f"QA-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}-"
+        f"{hashlib.sha1((args.title + now()).encode()).hexdigest()[:5]}"
+    )
+    data = {
+        "id": fid,
+        "title": args.title,
+        "severity": severity,
+        "severity_code": SEVERITY_TO_P[severity],
+        "category": validate_category(args.category),
+        "profile_id": args.profile_id,
+        "location": args.location,
+        "actual": args.actual,
+        "expected": args.expected,
+        "reproduction": args.reproduction,
+        "impact": args.impact,
+        "recommendation": args.recommendation,
+        "evidence": args.evidence or [],
+        "created_at": now(),
+    }
+    save(FIND / f"{fid}.json", data)
+    print(fid)
+
+
+def declare_empty(args) -> None:
+    """Explicitly declare a category as having no applicable items.
+
+    This is the only supported way for an empty category to count as complete.
+    Without it, an empty category reports 0% and blocks completion, which is
+    what prevents a zero-discovery audit from reporting a false 100%.
+    """
+    ensure_dirs()
+    require_initialized()
+    cat = validate_category(args.category)
+    items = normalize_inventory(load(inventory_path(cat), []))
+    if items:
+        raise SystemExit(
+            f"Category '{cat}' already has {len(items)} inventoried item(s); it cannot be declared empty."
+        )
+    declared = load(DECLARED_EMPTY, {}) or {}
+    declared[cat] = {"reason": args.notes, "declared_at": now()}
+    save(DECLARED_EMPTY, declared)
+    print(f"declared-empty:{cat}")
+
+
+def mark_discovery(args) -> None:
+    ensure_dirs()
+    state = load(STATE, {}) or {}
+    if not state:
+        raise SystemExit("QA state not found. Run 'qa-cli init' first.")
+    state["discovery_complete"] = True
+    state["discovery_notes"] = args.notes or ""
+    state["updated_at"] = now()
+    save(STATE, state)
+    print("discovery_complete=true")
+
+
+def load_results(cat: str) -> dict:
+    results: dict[str, dict] = {}
+    result_dir = RES / cat
+    if result_dir.exists():
+        for p in result_dir.glob("*.json"):
+            try:
+                r = load(p, {}) or {}
+                if r.get("id"):
+                    results[str(r["id"])] = r
+            except (json.JSONDecodeError, OSError):
+                continue
+    return results
+
+
+def category_status(cat: str, declared: dict) -> dict:
+    items = normalize_inventory(load(inventory_path(cat), []))
+    ids = [str(x.get("id")) for x in items if x.get("id") is not None]
+    results = load_results(cat)
+    tested = [i for i in ids if results.get(i, {}).get("status") in COUNTED]
+    missing = [i for i in ids if i not in tested]
+    total = len(ids)
+
+    declaration = declared.get(cat)
+    if total == 0:
+        # An empty category is only complete when it has been explicitly and
+        # justifiably declared empty. Otherwise it is undiscovered work.
+        coverage = 100.0 if declaration else 0.0
+    else:
+        coverage = round(len(tested) * 100.0 / total, 2)
+
+    status_counts: dict[str, int] = {}
+    for i in tested:
+        s = results[i]["status"]
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+    return {
+        "total": total,
+        "tested": len(tested),
+        "coverage_percent": coverage,
+        "missing": missing,
+        "status_counts": status_counts,
+        "empty": total == 0,
+        "declared_empty": bool(declaration),
+        "declared_empty_reason": (declaration or {}).get("reason"),
+    }
+
+
+def load_findings() -> list[dict]:
+    out = []
+    if FIND.exists():
+        for p in sorted(FIND.glob("*.json")):
+            try:
+                out.append(load(p, {}) or {})
+            except (json.JSONDecodeError, OSError):
+                continue
+    return out
+
+
+def status_data() -> dict:
+    config = load(CONFIG, {}) or {}
+    state = load(STATE, {}) or {}
+    declared = load(DECLARED_EMPTY, {}) or {}
+
+    required = config.get("required_categories") or CORE_CATEGORIES
+    tracked = config.get("tracked_categories") or EXTENDED_CATEGORIES
+
+    # Report anything that is required, tracked, or has produced real data, so
+    # that specialized-agent coverage never becomes invisible.
+    seen = set(required) | set(tracked)
+    if INV.exists():
+        seen |= {p.stem for p in INV.glob("*.json")}
+    if RES.exists():
+        seen |= {p.name for p in RES.iterdir() if p.is_dir()}
+
+    details = {c: category_status(c, declared) for c in sorted(seen)}
+    threshold = float(config.get("required_coverage_percent", 100))
+
+    blocking = [c for c in required if details.get(c, {}).get("coverage_percent", 0) < threshold]
+    complete = bool(state.get("discovery_complete")) and not blocking
+
+    findings = load_findings()
+    severity_counts = {s: 0 for s in SEVERITY_ORDER}
+    for f in findings:
+        sev = f.get("severity")
+        if sev in severity_counts:
+            severity_counts[sev] += 1
+
+    return {
+        "state": state,
+        "config": config,
+        "required_categories": required,
+        "tracked_categories": tracked,
+        "categories": details,
+        "blocking_categories": blocking,
+        "findings_total": len(findings),
+        "findings_by_severity": severity_counts,
+        "complete": complete,
+    }
+
+
+def status(args) -> None:
+    data = status_data()
+    if args.json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    st = data["state"]
+    print(f"QA status: {st.get('status', 'not-initialized')} | discovery_complete={st.get('discovery_complete', False)}")
+    required = set(data["required_categories"])
+    print(f"{'category':18} {'tested':>7}/{'total':<7} {'coverage':>9}  gate      breakdown")
+    for c, v in data["categories"].items():
+        gate = "REQUIRED" if c in required else "tracked"
+        note = ""
+        if v["empty"]:
+            note = " (declared empty)" if v["declared_empty"] else " (EMPTY - NOT DISCOVERED)"
+        print(
+            f"{c:18} {v['tested']:>7}/{v['total']:<7} {v['coverage_percent']:>8.2f}%  "
+            f"{gate:9} {v['status_counts']}{note}"
+        )
+    sev = data["findings_by_severity"]
+    print(
+        f"findings: {data['findings_total']} "
+        f"(critical={sev['critical']} high={sev['high']} medium={sev['medium']} low={sev['low']})"
+    )
+    print("COMPLETE" if data["complete"] else "INCOMPLETE")
+
+
+def validate(args) -> int:
+    data = status_data()
+    if data["complete"]:
+        print("QA coverage validation: PASS")
+        return 0
+    print("QA coverage validation: FAIL")
+    if not data["state"].get("discovery_complete"):
+        print("- discovery is not marked complete")
+    threshold = float(data["config"].get("required_coverage_percent", 100))
+    for c in data["required_categories"]:
+        v = data["categories"].get(c)
+        if v is None or v["coverage_percent"] >= threshold:
+            continue
+        if v["empty"]:
+            print(
+                f"- {c}: no items discovered. Either inventory this category or run "
+                f"'qa-cli declare-empty --category {c} --notes \"<justification>\"'."
+            )
+            continue
+        print(f"- {c}: {v['coverage_percent']}% ({v['tested']}/{v['total']}); missing={len(v['missing'])}")
+        for x in v["missing"][:15]:
+            print(f"    * {x}")
+        if len(v["missing"]) > 15:
+            print(f"    ... +{len(v['missing']) - 15} more")
+    return 2
+
+
+def build_matrix() -> list[dict]:
+    """Build the traceability matrix rows from inventory and results."""
+    data = status_data()
+    declared = load(DECLARED_EMPTY, {}) or {}
+    rows: list[dict] = []
+
+    # Index navigation items so menu/submenu ancestry can be resolved by id.
+    nav_index: dict[str, dict] = {}
+    for item in normalize_inventory(load(inventory_path("navigation"), [])):
+        if item.get("id") is not None:
+            nav_index[str(item["id"])] = item
+
+    def ancestry(item: dict) -> tuple[str, str]:
+        """Return (menu, submenu) labels for a navigation item."""
+        chain: list[dict] = []
+        cursor: dict | None = item
+        seen: set[str] = set()
+        while cursor is not None:
+            cid = str(cursor.get("id"))
+            if cid in seen:
+                break  # defensive: never loop on a malformed parent chain
+            seen.add(cid)
+            chain.append(cursor)
+            parent_id = cursor.get("parent_id")
+            cursor = nav_index.get(str(parent_id)) if parent_id else None
+        chain.reverse()
+        labels = [str(c.get("label") or c.get("id") or "") for c in chain]
+        menu = labels[0] if labels else ""
+        submenu = labels[1] if len(labels) > 1 else ""
+        return menu, submenu
+
+    for cat in data["categories"]:
+        items = normalize_inventory(load(inventory_path(cat), []))
+        results = load_results(cat)
+        if not items:
+            rows.append({
+                "area": cat,
+                "role": "",
+                "menu": "",
+                "submenu": "",
+                "feature": "",
+                "scenario": "",
+                "test": "",
+                "status": "DECLARED EMPTY" if cat in declared else "NOT TESTED",
+                "evidence": (declared.get(cat) or {}).get("reason", "") if cat in declared else "",
+            })
+            continue
+        for item in items:
+            iid = str(item.get("id"))
+            result = results.get(iid)
+            menu, submenu = ancestry(item) if cat == "navigation" else ("", "")
+            rows.append({
+                "area": cat,
+                "role": str(item.get("profile_id") or ""),
+                "menu": menu,
+                "submenu": submenu,
+                "feature": str(item.get("label") or ""),
+                "scenario": (result or {}).get("scenario") or str(item.get("kind") or ""),
+                "test": iid,
+                "status": (result or {}).get("status", "").upper() or "NOT TESTED",
+                "evidence": ", ".join((result or {}).get("evidence", []) or []),
+            })
+    return rows
+
+
+def matrix(args) -> int:
+    rows = build_matrix()
+    if args.format == "json":
+        out = json.dumps({"rows": rows, "total": len(rows)}, indent=2, ensure_ascii=False)
+    else:
+        header = ["Area", "Role", "Menu", "Submenu", "Feature", "Scenario", "Test", "Status", "Evidence"]
+        keys = ["area", "role", "menu", "submenu", "feature", "scenario", "test", "status", "evidence"]
+        lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+        for r in rows:
+            cells = [str(r[k]).replace("|", "\\|") for k in keys]
+            lines.append("| " + " | ".join(cells) + " |")
+        untested = sum(1 for r in rows if r["status"] in {"NOT TESTED", "BLOCKED"})
+        lines.append("")
+        lines.append(f"Rows: {len(rows)} | not tested or blocked: {untested}")
+        out = "\n".join(lines)
+
+    if args.out:
+        target = Path(args.out)
+        if not target.is_absolute():
+            target = ROOT / target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(out + "\n", encoding="utf-8")
+        print(f"matrix written: {target}")
+    else:
+        print(out)
+    return 0
+
+
+def finish(args) -> None:
+    code = validate(args)
+    if code != 0 and not args.force:
+        raise SystemExit(
+            "Cannot finish: coverage is incomplete. Use --force only to close an intentionally "
+            "incomplete audit; the run will be recorded as closed_incomplete."
+        )
+    state = load(STATE, {}) or {}
+    state["status"] = "complete" if code == 0 else "closed_incomplete"
+    state["finished_at"] = now()
+    state["updated_at"] = now()
+    save(STATE, state)
+    print(f"QA run closed: {state['status']}")
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Claude Code QA coverage state CLI")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    q = sp.add_parser("init", help="initialize or resume the project-local QA state")
+    q.add_argument("--goal")
+    q.add_argument("--force", action="store_true")
+    q.set_defaults(fn=init)
+
+    q = sp.add_parser("inventory-add", help="add or update one inventory item")
+    q.add_argument("--category", required=True)
+    q.add_argument("--id", required=True)
+    q.add_argument("--kind", default="item")
+    q.add_argument("--label", default="")
+    q.add_argument("--profile-id")
+    q.add_argument("--route")
+    q.add_argument("--parent-id")
+    q.add_argument("--metadata")
+    q.set_defaults(fn=add_inventory)
+
+    q = sp.add_parser("record", help="persist the result of testing one inventory item")
+    q.add_argument("--category", required=True)
+    q.add_argument("--id", required=True)
+    q.add_argument("--status", required=True)
+    q.add_argument("--profile-id")
+    q.add_argument("--evidence", action="append")
+    q.add_argument("--notes")
+    q.add_argument("--scenario")
+    q.add_argument("--finding-id", action="append")
+    q.add_argument("--tester")
+    q.set_defaults(fn=record)
+
+    q = sp.add_parser("finding", help="record a traceable defect")
+    q.add_argument("--id")
+    q.add_argument("--title", required=True)
+    q.add_argument("--severity", required=True,
+                   help="critical|high|medium|low (P0|P1|P2|P3 accepted as aliases)")
+    q.add_argument("--category", required=True)
+    q.add_argument("--profile-id")
+    q.add_argument("--location")
+    q.add_argument("--actual")
+    q.add_argument("--expected")
+    q.add_argument("--reproduction")
+    q.add_argument("--impact")
+    q.add_argument("--recommendation")
+    q.add_argument("--evidence", action="append")
+    q.set_defaults(fn=add_finding)
+
+    q = sp.add_parser("declare-empty",
+                      help="declare a category as having no applicable items, with justification")
+    q.add_argument("--category", required=True)
+    q.add_argument("--notes", required=True)
+    q.set_defaults(fn=declare_empty)
+
+    q = sp.add_parser("mark-discovery-complete", help="mark the discovery phase as finished")
+    q.add_argument("--notes")
+    q.set_defaults(fn=mark_discovery)
+
+    q = sp.add_parser("status", help="show coverage and audit state")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(fn=status)
+
+    q = sp.add_parser("validate", help="fail unless the configured coverage is satisfied")
+    q.set_defaults(fn=validate)
+
+    q = sp.add_parser("matrix", help="generate the traceability matrix")
+    q.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    q.add_argument("--out", help="write to this path instead of stdout")
+    q.set_defaults(fn=matrix)
+
+    q = sp.add_parser("finish", help="close the audit run")
+    q.add_argument("--force", action="store_true")
+    q.set_defaults(fn=finish)
+    return p
+
+
+if __name__ == "__main__":
+    parsed = parser().parse_args()
+    rc = parsed.fn(parsed)
+    if isinstance(rc, int):
+        sys.exit(rc)

@@ -1,0 +1,18 @@
+# English-only gate allowlist.
+#
+# Format (one rule per line):
+#   <path-glob>                 -> exempt every line in matching files
+#   <path-glob> :: <regex>      -> exempt only lines matching the regex
+#
+# Keep this file as small as possible. Every entry is a documented, intentional
+# exception; it is not a place to silence real translation debt.
+
+# The gate's own lexicon, glossary and suffix tables are Portuguese by definition.
+scripts/check_english_only.py
+
+# The gate's tests need genuine Portuguese fixtures to prove detection works.
+# Without these samples the gate could silently stop catching anything.
+tests/test_english_gate.py
+
+# Proper nouns: a person's name is not translatable content.
+* :: Sergio Alexandre de Carvalho
