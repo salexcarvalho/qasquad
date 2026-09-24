@@ -6,7 +6,7 @@ Configuration lives in the audited project, at `.qa/config.json`. It is created 
 ```json
 {
   "required_coverage_percent": 100,
-  "required_categories": ["profiles", "navigation", "features", "forms", "workflows", "permissions"],
+  "required_categories": ["profiles", "navigation", "features", "forms", "workflows", "permissions", "scenarios"],
   "tracked_categories": ["api", "ux", "ui", "responsive", "accessibility", "security", "performance", "resilience", "data-integrity"],
   "strict_navigation_by_profile": true,
   "required_viewports": ["desktop", "mobile"],
@@ -31,7 +31,7 @@ To make an audit formally gate on, for example, security and accessibility, move
 `required_categories`:
 
 ```json
-"required_categories": ["profiles", "navigation", "features", "forms", "workflows", "permissions", "security", "accessibility"]
+"required_categories": ["profiles", "navigation", "features", "forms", "workflows", "permissions", "scenarios", "security", "accessibility"]
 ```
 
 Those categories must then be inventoried and executed, or explicitly declared empty.

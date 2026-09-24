@@ -5,8 +5,9 @@ each one owns a single clearly defined responsibility.
 
 | Agent | Responsibility | Reads | Writes (category) |
 |---|---|---|---|
-| `qa-orchestrator` | Runs the audit, delegates, controls closure | audit goal, `.qa/` | none directly |
-| `qa-system-discovery` | Builds the testable universe | code, UI, docs, APIs | all inventories |
+| `qa-orchestrator` | Runs the audit, delegates, controls closure. Main thread only | audit goal, `.qa/` | none directly |
+| `qa-system-discovery` | Builds the testable universe | code, UI, docs, APIs | all inventories except `scenarios` |
+| `qa-scenario-tester` | Detects existing test scenarios; generates them when there are none; executes all | source tree, inventories | `scenarios` |
 | `qa-navigation-auditor` | Menus, submenus, pages, tabs, modals, deep links | `navigation` inventory | `navigation` |
 | `qa-functional-tester` | Functional behavior and CRUD | `features` inventory | `features` |
 | `qa-form-tester` | Form validation matrix | `forms` inventory | `forms` |
@@ -24,6 +25,13 @@ each one owns a single clearly defined responsibility.
 | `qa-e2e-generator` | Regression tests for critical flows | workflows, findings | test files |
 | `qa-coverage-auditor` | Independent review, prevents false 100% | whole `.qa/` ledger | gap list |
 | `qa-report-writer` | Final traceable report | whole `.qa/` ledger | `.qa/reports/` |
+
+## Main-thread agents
+
+Subagents cannot start other subagents. `qa-orchestrator` delegates, so it must run on the
+main thread: either through `/qa-squad:qa-full-audit`, which runs in the main conversation,
+or as `claude --agent qa-squad:qa-orchestrator`. `scripts/validate_package.py` rejects any
+skill that forks into it.
 
 ## Shared contract
 

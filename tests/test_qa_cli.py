@@ -14,7 +14,9 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parents[1]
 CLI = PKG / "plugins" / "qa-squad" / "bin" / "qa-cli"
 
-CORE = ["profiles", "navigation", "features", "forms", "workflows", "permissions"]
+CORE = ["profiles", "navigation", "features", "forms", "workflows", "permissions", "scenarios"]
+# Every core category except `scenarios`, which can never be declared empty.
+DECLARABLE = [c for c in CORE if c != "scenarios"]
 
 
 class Failure(Exception):
@@ -38,6 +40,15 @@ def status_json(root):
     return json.loads(p.stdout)
 
 
+def complete_scenarios(root):
+    """Scan for scenarios, then generate and execute one, as the scenario tester would."""
+    p = run(root, "scenario-scan")
+    check(p.returncode == 0, f"scenario-scan failed: {p.stderr}")
+    run(root, "inventory-add", "--category", "scenarios", "--id", "scenario:generated:x",
+        "--kind", "generated", "--label", "happy path")
+    run(root, "record", "--category", "scenarios", "--id", "scenario:generated:x", "--status", "passed")
+
+
 def test_happy_path():
     """A fully inventoried and fully executed audit reaches completion."""
     with tempfile.TemporaryDirectory() as d:
@@ -49,6 +60,8 @@ def test_happy_path():
             check(p.returncode == 0, f"inventory-add {cat} failed: {p.stderr}")
         p = run(r, "mark-discovery-complete")
         check(p.returncode == 0, f"mark-discovery-complete failed: {p.stderr}")
+        p = run(r, "scenario-scan")
+        check(p.returncode == 0, f"scenario-scan failed: {p.stderr}")
         p = run(r, "validate")
         check(p.returncode != 0, "validate must fail before any result is recorded")
         for cat in CORE:
@@ -87,9 +100,10 @@ def test_declare_empty_is_the_only_escape():
     with tempfile.TemporaryDirectory() as d:
         r = Path(d)
         run(r, "init", "--goal", "declare")
-        for cat in CORE:
+        for cat in DECLARABLE:
             p = run(r, "declare-empty", "--category", cat, "--notes", "nothing applicable here")
             check(p.returncode == 0, f"declare-empty {cat} failed: {p.stderr}")
+        complete_scenarios(r)
         run(r, "mark-discovery-complete", "--notes", "all categories justified")
         p = run(r, "validate")
         check(p.returncode == 0, f"declared-empty audit should validate: {p.stdout}")
@@ -202,6 +216,103 @@ def test_promoted_category_gates():
         run(r, "mark-discovery-complete")
         p = run(r, "validate")
         check(p.returncode != 0, "a promoted category must gate completion")
+
+
+def _project(root):
+    """A small project with one scenario of every detectable origin."""
+    (root / "features").mkdir()
+    (root / "features" / "login.feature").write_text(
+        "Feature: Login\n  Scenario: valid credentials\n  Scenario Outline: invalid <field>\n")
+    (root / "e2e").mkdir()
+    (root / "e2e" / "cart.spec.ts").write_text(
+        "import { test } from '@playwright/test';\n"
+        "test('adds one item', async () => {});\n"
+        "test.skip(\"applies coupon\", async () => {});\n"
+        "test.describe('group', () => {});\n")
+    (root / "src").mkdir()
+    (root / "src" / "sum.test.ts").write_text("test('adds numbers', () => {});\n")
+    (root / "docs").mkdir()
+    (root / "docs" / "test-plan.md").write_text("# Test plan\n")
+    (root / "node_modules" / "lib").mkdir(parents=True)
+    (root / "node_modules" / "lib" / "a.spec.ts").write_text("test('ignored', () => {});\n")
+    (root / "package.json").write_text(json.dumps({"scripts": {"test": "vitest", "test:e2e": "playwright test", "build": "vite build"}}))
+
+
+def test_scenario_scan_finds_and_imports_existing_scenarios():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        _project(r)
+        run(r, "init", "--goal", "scan")
+        p = run(r, "scenario-scan", "--import", "--json")
+        check(p.returncode == 0, f"scenario-scan failed: {p.stderr}")
+        scan = json.loads(p.stdout)
+        check(scan["found"] is True, "existing scenarios must be detected")
+        c = scan["counts"]
+        check(c["gherkin_scenarios"] == 2, f"expected 2 gherkin scenarios, got {c['gherkin_scenarios']}")
+        check(c["e2e_tests"] == 2, f"expected 2 e2e tests (describe excluded), got {c['e2e_tests']}")
+        check(c["unit_files"] == 1, f"expected 1 unit file, got {c['unit_files']}")
+        check(scan["sources"]["documented"] == ["docs/test-plan.md"], f"documented: {scan['sources']['documented']}")
+        check(all("node_modules" not in f["file"] for f in scan["sources"]["e2e"]), "node_modules must be skipped")
+        ids = {x["id"] for x in json.loads((r / ".qa" / "inventory" / "scenarios.json").read_text())["items"]}
+        check("scenario:gherkin:features/login.feature::valid credentials" in ids, f"gherkin not imported: {ids}")
+        check("scenario:e2e:e2e/cart.spec.ts::applies coupon" in ids, f"e2e not imported: {ids}")
+        check("scenario:suite:package.json#test:e2e" in ids, f"suite not imported: {ids}")
+        check("scenario:suite:package.json#build" not in ids, "a build script is not a test suite")
+        check(scan["imported"] == len(ids) == 6, f"expected 6 imported items, got {scan['imported']}/{len(ids)}")
+        # Importing again must not duplicate anything.
+        again = json.loads(run(r, "scenario-scan", "--import", "--json").stdout)
+        check(again["imported"] == 0, "a second import must be idempotent")
+        state = status_json(r)
+        check(state["scenario_scan"]["found"] is True, "run-state must remember the scan verdict")
+
+
+def test_scenario_scan_reports_none_and_gates_until_generated():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        (r / "src").mkdir()
+        (r / "src" / "app.py").write_text("print('hi')\n")
+        run(r, "init", "--goal", "none")
+        for cat in DECLARABLE:
+            run(r, "declare-empty", "--category", cat, "--notes", "n/a")
+        run(r, "mark-discovery-complete", "--notes", "done")
+        p = run(r, "validate")
+        check("not been scanned" in p.stdout, f"validate must require the scan: {p.stdout}")
+        p = run(r, "scenario-scan")
+        check(p.returncode == 0 and "Scenario scan: NONE" in p.stdout, f"expected NONE: {p.stdout}")
+        p = run(r, "validate")
+        check(p.returncode != 0 and "no test scenarios" in p.stdout, f"empty scenarios must gate: {p.stdout}")
+        p = run(r, "declare-empty", "--category", "scenarios", "--notes", "skip")
+        check(p.returncode != 0, "scenarios must never be declarable as empty")
+        complete_scenarios(r)
+        p = run(r, "validate")
+        check(p.returncode == 0, f"generated and executed scenarios must validate: {p.stdout}")
+
+
+def test_scenario_list_exports_steps_and_status():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        run(r, "init", "--goal", "list")
+        meta = json.dumps({"origin": "generated", "covers": ["features:1"], "steps": ["open cart", "pay"], "expected": "order created"})
+        run(r, "inventory-add", "--category", "scenarios", "--id", "scenario:generated:pay", "--kind", "generated",
+            "--label", "pay order", "--metadata", meta)
+        run(r, "record", "--category", "scenarios", "--id", "scenario:generated:pay", "--status", "failed")
+        p = run(r, "scenario-list", "--out", ".qa/reports/test-scenarios.md")
+        check(p.returncode == 0, f"scenario-list failed: {p.stderr}")
+        text = (r / ".qa" / "reports" / "test-scenarios.md").read_text()
+        for needle in ["pay order", "features:1", "1. open cart", "**Expected:** order created", "FAILED"]:
+            check(needle in text, f"scenario list is missing '{needle}'")
+
+
+def test_record_warns_on_unknown_id():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        run(r, "init", "--goal", "typo")
+        run(r, "inventory-add", "--category", "forms", "--id", "forms:1")
+        p = run(r, "record", "--category", "forms", "--id", "forms:l", "--status", "passed")
+        check(p.returncode == 0, "recording an unknown id keeps the result")
+        check("not in the forms inventory" in p.stderr, f"an unknown id must warn: {p.stderr}")
+        p = run(r, "record", "--category", "forms", "--id", "forms:1", "--status", "passed")
+        check(p.stderr == "", f"a known id must not warn: {p.stderr}")
 
 
 def test_invalid_category_rejected():

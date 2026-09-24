@@ -65,6 +65,9 @@ def test_stop_hook_allows_complete_audit():
         cli(r, "init", "--goal", "hook test")
         for cat in ["profiles", "navigation", "features", "forms", "workflows", "permissions"]:
             cli(r, "declare-empty", "--category", cat, "--notes", "not applicable")
+        cli(r, "scenario-scan")
+        cli(r, "inventory-add", "--category", "scenarios", "--id", "scenario:generated:x", "--kind", "generated")
+        cli(r, "record", "--category", "scenarios", "--id", "scenario:generated:x", "--status", "passed")
         cli(r, "mark-discovery-complete", "--notes", "done")
         p = run_hook(STOP_HOOK, r, {"cwd": d})
         check(p.stdout.strip() == "", f"hook must allow a complete audit, got: {p.stdout}")
@@ -115,6 +118,35 @@ def test_secrets_hook_allows_example_files():
         for name in [".env.example", ".env.sample", ".env.template", "config.py"]:
             p = _secrets(r, str(r / name))
             check(p.stdout.strip() == "", f"{name} must not be denied")
+
+
+def test_stop_hook_asks_for_scenario_scan():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        cli(r, "init", "--goal", "hook test")
+        p = run_hook(STOP_HOOK, r, {"cwd": d})
+        reason = json.loads(p.stdout)["reason"]
+        check("scanned for existing test scenarios" in reason, f"hook must ask for the scan: {reason}")
+
+
+def _bash(root, command, tool="Bash"):
+    return run_hook(SECRETS_HOOK, root, {"cwd": str(root), "tool_name": tool, "tool_input": {"command": command}})
+
+
+def test_secrets_hook_denies_shell_writes_to_env():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        cli(r, "init", "--goal", "secrets")
+        for command in ["echo A=1 > .env", "echo A >> app/.env.local", "cat x | tee -a .env",
+                        "sed -i 's/a/b/' .env.production", "cp /tmp/x .env"]:
+            p = _bash(r, command)
+            check("deny" in p.stdout, f"'{command}' must be denied")
+        for command in ["cat .env", "grep KEY .env", "cp .env.example /tmp/x",
+                        "echo x > .env.example", "npm test > out.log", "source .env && npm run e2e"]:
+            p = _bash(r, command)
+            check(p.stdout.strip() == "", f"'{command}' must be allowed")
+        p = run_hook(SECRETS_HOOK, r, {"cwd": d, "tool_name": "NotebookEdit", "tool_input": {"notebook_path": ".env"}})
+        check("deny" in p.stdout, "NotebookEdit on .env must be denied")
 
 
 def test_secrets_hook_inactive_outside_audit():

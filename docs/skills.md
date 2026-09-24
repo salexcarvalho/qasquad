@@ -17,7 +17,7 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 
 | Skill | Purpose | Backing agent |
 |---|---|---|
-| `qa-full-audit` | Run the complete audit | `qa-orchestrator` |
+| `qa-full-audit` | Run the complete audit | none (main conversation, orchestrates every agent) |
 | `qa-discover-system` | Build the testable universe | `qa-system-discovery` |
 | `qa-gap-analysis` | Find untested items and false 100% | `qa-coverage-auditor` |
 | `qa-final-report` | Final report, gated on coverage | `qa-report-writer` |
@@ -41,6 +41,7 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 | `qa-test-api` | API contracts and behavior | `qa-api-tester` |
 | `qa-test-resilience` | Error and recovery behavior | `qa-error-resilience-tester` |
 | `qa-test-performance` | Performance bottlenecks | `qa-performance-auditor` |
+| `qa-test-scenarios` | Detect existing test scenarios, generate when missing, execute | `qa-scenario-tester` |
 
 ## Agent and skill relationship
 

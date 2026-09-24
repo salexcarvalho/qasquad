@@ -79,7 +79,11 @@ Look for a false 100% caused by:
 - ignored tabs and modals;
 - items marked `not_applicable` without an adequate justification;
 - categories declared empty without a defensible reason;
-- coverage recorded without evidence of execution.
+- coverage recorded without evidence of execution;
+- a `scenarios` category that was filled without running `qa-cli scenario-scan`, so that
+  existing scenarios in the project were ignored;
+- generated scenarios that do not name the inventory IDs they cover, or inventoried
+  features, workflows, forms and permissions that no scenario covers.
 
 Cross-sample the code and the UI to verify the denominator. When you discover new items, add
 them to the inventory; coverage is expected to drop until they are tested.

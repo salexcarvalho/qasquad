@@ -26,7 +26,14 @@ Discovery is complete only when marked:
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" mark-discovery-complete --notes "<what was covered>"
 ```
 
-### 3. Test by specialty
+### 3. Check the test scenarios
+
+`qa-scenario-tester` runs `qa-cli scenario-scan --import` and reports `FOUND` or `NONE`.
+Existing scenarios are imported and executed. When there are none, scenarios are generated
+from the inventory and executed. The `scenarios` category gates closure and cannot be
+declared empty.
+
+### 4. Test by specialty
 
 The orchestrator distributes work across the specialized agents, parallelizing only
 independent workstreams. Each agent records one result per inventory ID.
@@ -35,7 +42,7 @@ For every discovered feature, the functional pass validates at least: happy path
 path, negative path, boundary conditions, invalid input, missing input, unexpected state,
 permission failure, backend failure and network failure where applicable.
 
-### 4. Audit coverage
+### 5. Audit coverage
 
 `qa-coverage-auditor` reviews the ledger independently, looking specifically for a false
 100%: incomplete discovery, dynamic menus never inventoried, items not qualified by role,
@@ -45,11 +52,11 @@ pages reachable only through an action, feature flags, rare roles, ignored tabs 
 New items discovered at this stage are added to the inventory, which lowers coverage until
 they are tested. That is the intended behavior.
 
-### 5. Generate regression tests
+### 6. Generate regression tests
 
 Only once the critical flows are understood.
 
-### 6. Report
+### 7. Report
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" matrix --format markdown --out .qa/reports/coverage-matrix.md

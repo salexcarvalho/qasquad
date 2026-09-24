@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented here.
 
+## [0.3.0] - 2026-09-24
+
+### Added
+- Test scenario detection. `qa-cli scenario-scan` finds the scenarios a project already has
+  (Gherkin, browser E2E specs, automated suites, test-plan documents) and `--import` adds them
+  to the new core category `scenarios`. `qa-cli scenario-list` publishes them with steps and
+  status.
+- `qa-scenario-tester` agent and `/qa-squad:qa-test-scenarios` skill: execute existing
+  scenarios, or generate scenarios from the inventory and execute them when there are none.
+- `scenarios` cannot be declared empty, and `validate` fails until the scan has run.
+- `qa-cli record` warns when the ID is not in the inventory, since that result can never count.
+
+### Fixed
+- **Critical**: `/qa-squad:qa-full-audit` forked into `qa-orchestrator`. Subagents cannot
+  start subagents, so the orchestrator could not delegate to any specialist. The skill now
+  runs in the main conversation, and the package validator rejects forking into an agent
+  that delegates.
+- The secrets hook missed `NotebookEdit` and shell writes (`>`, `tee`, `sed -i`, `cp`, `mv`)
+  to `.env` files.
+
 ## [0.2.0] - 2026-09-07
 
 ### Fixed

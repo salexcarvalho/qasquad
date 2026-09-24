@@ -52,12 +52,23 @@ if data.get("complete"):
 parts = []
 if not data.get("state", {}).get("discovery_complete"):
     parts.append("System discovery has not been marked complete.")
+if data.get("scenario_scan_required") and not data.get("scenario_scan"):
+    parts.append(
+        "The project has not been scanned for existing test scenarios. Run "
+        "'qa-cli scenario-scan --import'; if none exist, generate scenarios from the inventory."
+    )
 
 threshold = float(data.get("config", {}).get("required_coverage_percent", 100))
 categories = data.get("categories", {})
 for cat in data.get("required_categories", []):
     v = categories.get(cat)
     if v is None or float(v.get("coverage_percent", 0)) >= threshold:
+        continue
+    if v.get("empty") and cat == "scenarios":
+        parts.append(
+            "scenarios: no test scenarios. Generate them from the inventory with "
+            "'qa-cli inventory-add --category scenarios --kind generated' and execute them."
+        )
         continue
     if v.get("empty"):
         parts.append(

@@ -50,7 +50,10 @@ turns "please finish the audit" into an enforced constraint.
 
 Core categories gate completion by default:
 
-`profiles`, `navigation`, `features`, `forms`, `workflows`, `permissions`
+`profiles`, `navigation`, `features`, `forms`, `workflows`, `permissions`, `scenarios`
+
+`scenarios` cannot be declared empty. When the project has no test scenarios, they are
+generated from the inventory and executed; see [usage](usage.md#test-scenarios).
 
 Tracked categories give every specialized agent a measurable lane, and can be promoted into
 `required_categories` when an audit must formally gate on them:
