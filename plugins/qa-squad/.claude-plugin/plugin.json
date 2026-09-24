@@ -1,7 +1,7 @@
 {
   "name": "qa-squad",
   "displayName": "QA Squad",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Generic autonomous multi-agent QA framework for Claude Code with deterministic coverage enforcement.",
   "author": {
     "name": "Sergio Alexandre de Carvalho",

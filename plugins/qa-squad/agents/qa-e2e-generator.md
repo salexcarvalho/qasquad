@@ -65,6 +65,10 @@ Prefer Playwright Test when it is compatible with the project. Use robust select
 role and label and a consistent test id, plus fixtures, isolation and predictable data.
 Avoid fixed sleeps and positional selectors.
 
+Start from the `scenarios` inventory: scenarios that already ran and passed are the best
+specification of the flows to protect. Do not write a second test for a flow that an
+existing E2E scenario already covers.
+
 Cover authentication, critical navigation, essential CRUD, workflows, roles and permissions,
 and the critical and high severity regressions where appropriate.
 

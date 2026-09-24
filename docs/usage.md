@@ -39,11 +39,37 @@ accessibility and error handling.
 /qa-squad:qa-test-api
 /qa-squad:qa-test-resilience
 /qa-squad:qa-test-performance
+/qa-squad:qa-test-scenarios
 /qa-squad:qa-generate-e2e
 /qa-squad:qa-gap-analysis
 /qa-squad:qa-coverage-matrix
 /qa-squad:qa-final-report
 ```
+
+## Test scenarios
+
+Before anything is generated, QA Squad checks whether the project already has test
+scenarios. The check is deterministic:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-scan --import
+```
+
+| Origin | Detected from | Imported as |
+|---|---|---|
+| Gherkin | `.feature` files | one item per `Scenario` / `Scenario Outline` |
+| Browser E2E | Playwright, Cypress, WebdriverIO, Puppeteer, Selenium specs | one item per test title |
+| Automated suites | test scripts in `package.json`, or runner configs | one item per way of running the suite |
+| Documents | test plans, test cases and scenario files (`.md`, `.csv`, `.xlsx`) | listed; the agent imports them |
+
+- **Scenarios found:** they are imported into the `scenarios` inventory and executed.
+- **No scenarios:** `qa-scenario-tester` generates them from the inventory (happy,
+  alternative, negative and boundary paths, each naming the inventory IDs it covers) and
+  executes them.
+
+`scenarios` is a core category and cannot be declared empty, so an audit cannot close until
+the scan has run and every scenario, existing or generated, has a result. The list is
+published with `qa-cli scenario-list --out .qa/reports/test-scenarios.md`.
 
 ## Reading coverage
 

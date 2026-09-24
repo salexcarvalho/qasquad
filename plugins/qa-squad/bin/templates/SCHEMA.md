@@ -34,6 +34,7 @@ These gate audit completion by default:
 - `forms`
 - `workflows`
 - `permissions`
+- `scenarios` (cannot be declared empty)
 
 ### Tracked categories
 
@@ -58,6 +59,31 @@ seen by two roles produces two items.
 
 Suggested kinds: `menu`, `submenu`, `page`, `tab`, `subtab`, `modal`, `action`, `shortcut`,
 `deep-link`.
+
+### Scenarios
+
+`scenarios` holds test scenarios. `qa-cli scenario-scan --import` fills it with the ones the
+project already has; `qa-scenario-tester` adds generated ones when there are none.
+
+```json
+{
+  "id": "scenario:generated:features:checkout:happy-path",
+  "kind": "generated",
+  "label": "Customer pays an order with a saved card",
+  "profile_id": "customer",
+  "metadata": {
+    "origin": "generated",
+    "covers": ["features:checkout", "workflows:order"],
+    "preconditions": "customer with one saved card and one item in the cart",
+    "steps": ["Open the cart", "Choose the saved card", "Confirm the payment"],
+    "expected": "The order appears as paid in My orders"
+  }
+}
+```
+
+`kind` is `gherkin`, `e2e`, `suite`, `documented` or `generated`. Imported items carry
+`metadata.origin = "existing"` and `metadata.source` with the file they came from. The last
+scan is kept in `.qa/scenario-scan.json`.
 
 ## Results
 

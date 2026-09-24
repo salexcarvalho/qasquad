@@ -138,10 +138,19 @@ for p in skill_paths:
         break
 
 # ------------------------------------------------------------ cross-references
+# Agents that delegate to other agents. Subagents cannot start subagents, so these
+# must run on the main thread and must never be the target of a forked skill.
+MAIN_THREAD_AGENTS = {"qa-orchestrator"}
+
 for skill_name, fm in skills.items():
     ref = fm.get("agent")
     if ref and ref not in agents:
         errors.append(f"Skill '{skill_name}' references unknown agent '{ref}'")
+    if ref in MAIN_THREAD_AGENTS:
+        errors.append(
+            f"Skill '{skill_name}' forks into '{ref}', which delegates to other agents; "
+            "subagents cannot start subagents, so it must run on the main thread"
+        )
     if ref and fm.get("context") != "fork":
         warnings.append(f"Skill '{skill_name}' delegates to an agent without 'context: fork'")
 
@@ -152,7 +161,7 @@ for agent_name, fm in agents.items():
 
 referenced_agents = {fm.get("agent") for fm in skills.values() if fm.get("agent")}
 for agent_name in agents:
-    if agent_name not in referenced_agents:
+    if agent_name not in referenced_agents and agent_name not in MAIN_THREAD_AGENTS:
         warnings.append(f"Agent '{agent_name}' is not reachable from any skill")
 
 # --------------------------------------------------------------- CLI and hooks

@@ -101,6 +101,9 @@ it explicitly so the omission is auditable:
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" declare-empty --category forms --notes "<justification>"
 ```
 
+Do not inventory the `scenarios` category yourself. `qa-scenario-tester` owns it: it scans
+the project for existing test scenarios and generates new ones from your inventory.
+
 ## Outputs
 
 Populated `.qa/inventory/*.json` files and, only at the very end when the relevant universe

@@ -64,7 +64,11 @@ Generate the traceability matrix before writing prose:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" matrix --format markdown --out .qa/reports/coverage-matrix.md
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-list --out .qa/reports/test-scenarios.md
 ```
+
+State in the executive summary whether the project already had test scenarios (from
+`.qa/scenario-scan.json`), how many were imported and how many were generated.
 
 Produce the following under `.qa/reports/`:
 

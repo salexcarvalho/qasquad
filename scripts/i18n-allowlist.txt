@@ -16,3 +16,7 @@ tests/test_english_gate.py
 
 # Proper nouns: a person's name is not translatable content.
 * :: Sergio Alexandre de Carvalho
+
+# qa-cli matches the Portuguese file names that Brazilian projects give to test plans
+# and scenario documents. The words are data to match, not untranslated prose.
+plugins/qa-squad/bin/qa-cli :: cenarios\?\|casos\?

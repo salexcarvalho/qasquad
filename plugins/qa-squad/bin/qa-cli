@@ -36,8 +36,13 @@ STATE = QA / "run-state.json"
 CONFIG = QA / "config.json"
 DECLARED_EMPTY = QA / "declared-empty.json"
 
-# Core categories gate audit completion by default.
-CORE_CATEGORIES = ["profiles", "navigation", "features", "forms", "workflows", "permissions"]
+SCENARIO_SCAN = QA / "scenario-scan.json"
+
+# Core categories gate audit completion by default. `scenarios` holds the test
+# scenarios themselves: the ones that already exist in the project, or the ones
+# generated from the inventory when the project has none.
+CORE_CATEGORIES = ["profiles", "navigation", "features", "forms", "workflows", "permissions", "scenarios"]
+SCENARIOS = "scenarios"
 
 # Extended categories give every specialized agent a measurable coverage lane.
 # They are tracked and reported by default, and can be promoted into
@@ -212,6 +217,15 @@ def record(args) -> None:
         raise SystemExit("Status 'not_applicable' requires a --notes justification.")
     if args.status == "blocked" and not args.notes:
         raise SystemExit("Status 'blocked' requires --notes explaining what blocked execution.")
+    inventoried = {str(x.get("id")) for x in normalize_inventory(load(inventory_path(cat), []))}
+    if args.id not in inventoried:
+        # The result is kept, but it cannot count towards coverage until an
+        # inventory item with the same ID exists. A typo here is otherwise silent.
+        print(
+            f"warning: '{args.id}' is not in the {cat} inventory; this result will not count "
+            f"towards coverage until the item is inventoried.",
+            file=sys.stderr,
+        )
     path = RES / cat / result_filename(args.id)
     data = {
         "id": args.id,
@@ -266,6 +280,11 @@ def declare_empty(args) -> None:
     ensure_dirs()
     require_initialized()
     cat = validate_category(args.category)
+    if cat == SCENARIOS:
+        raise SystemExit(
+            "The 'scenarios' category cannot be declared empty. When the project has no test "
+            "scenarios, generate them from the inventory and execute them instead."
+        )
     items = normalize_inventory(load(inventory_path(cat), []))
     if items:
         raise SystemExit(
@@ -367,7 +386,16 @@ def status_data() -> dict:
     threshold = float(config.get("required_coverage_percent", 100))
 
     blocking = [c for c in required if details.get(c, {}).get("coverage_percent", 0) < threshold]
-    complete = bool(state.get("discovery_complete")) and not blocking
+    # When scenarios gate the audit, the project must have been scanned for the
+    # scenarios it already has. Otherwise generated scenarios could silently
+    # replace existing ones instead of complementing them.
+    scan_required = SCENARIOS in required
+    scan_done = bool(state.get("scenario_scan"))
+    complete = (
+        bool(state.get("discovery_complete"))
+        and not blocking
+        and (scan_done or not scan_required)
+    )
 
     findings = load_findings()
     severity_counts = {s: 0 for s in SEVERITY_ORDER}
@@ -383,6 +411,8 @@ def status_data() -> dict:
         "tracked_categories": tracked,
         "categories": details,
         "blocking_categories": blocking,
+        "scenario_scan_required": scan_required,
+        "scenario_scan": state.get("scenario_scan"),
         "findings_total": len(findings),
         "findings_by_severity": severity_counts,
         "complete": complete,
@@ -423,10 +453,18 @@ def validate(args) -> int:
     print("QA coverage validation: FAIL")
     if not data["state"].get("discovery_complete"):
         print("- discovery is not marked complete")
+    if data["scenario_scan_required"] and not data["scenario_scan"]:
+        print("- the project has not been scanned for existing test scenarios; run 'qa-cli scenario-scan'")
     threshold = float(data["config"].get("required_coverage_percent", 100))
     for c in data["required_categories"]:
         v = data["categories"].get(c)
         if v is None or v["coverage_percent"] >= threshold:
+            continue
+        if v["empty"] and c == SCENARIOS:
+            print(
+                f"- {c}: no test scenarios. Import the existing ones with 'qa-cli scenario-scan "
+                f"--import', or generate them from the inventory, then execute them."
+            )
             continue
         if v["empty"]:
             print(
@@ -535,6 +573,302 @@ def matrix(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ scenarios
+#
+# The scan answers one question deterministically: does this project already
+# have test scenarios? Existing scenarios are imported and executed; when there
+# are none, the scenarios category stays empty and blocks completion until
+# scenarios are generated from the inventory and executed.
+
+SCAN_SKIP_DIRS = {
+    ".git", ".hg", ".svn", ".qa", "node_modules", "bower_components", "vendor", "dist",
+    "build", "out", "target", "coverage", ".next", ".nuxt", ".svelte-kit", ".turbo",
+    ".cache", ".venv", "venv", "env", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".tox", ".idea", ".vscode", "playwright-report", "test-results",
+}
+SCAN_MAX_FILES = 50000
+
+JS_TEST_RE = re.compile(r"\.(spec|test|cy|e2e)\.[cm]?[jt]sx?$", re.I)
+UNIT_TEST_RES = [
+    re.compile(r"^test_.+\.py$"), re.compile(r".+_test\.py$"), re.compile(r".+_test\.go$"),
+    re.compile(r".+(Test|Tests|IT)\.(java|kt|cs)$"), re.compile(r".+_spec\.rb$"),
+]
+E2E_PATH_RE = re.compile(r"(^|/)(e2e|cypress|playwright|tests?-e2e|acceptance)(/|$)", re.I)
+E2E_IMPORT_RE = re.compile(r"@playwright/test|from ['\"]cypress|\bcy\.visit\(|webdriverio|puppeteer|selenium")
+DOC_EXTENSIONS = {".md", ".csv", ".xlsx", ".xls", ".txt", ".tsv"}
+# Documented scenarios are matched by name. The Portuguese forms are real file
+# names found in Brazilian projects, so they are matched on purpose.
+DOC_NAME_RE = re.compile(
+    r"test[-_ ]?(case|plan|scenario|script|suite)s?|scenarios?|cenarios?|casos?[-_ ]de[-_ ]teste|roteiros?[-_ ]de[-_ ]teste",
+    re.I,
+)
+DOC_DIR_RE = re.compile(r"(^|/)(test[-_]?(cases|plans|scenarios)|scenarios|qa)(/|$)", re.I)
+GHERKIN_FEATURE_RE = re.compile(r"^\s*(Feature|Funcionalidade|Caracter[ií]stica)\s*:\s*(.+)$")
+GHERKIN_SCENARIO_RE = re.compile(
+    r"^\s*(Scenario Outline|Scenario Template|Scenario|Example|Esquema do Cen[aá]rio|Cen[aá]rio|Exemplo)\s*:\s*(.+)$"
+)
+JS_TITLE_RE = re.compile(
+    r"\b(?:test|it)(?:\.(?:only|skip|fixme|fail|slow))?\s*\(\s*(['\"`])((?:\\.|(?!\1).)+?)\1"
+)
+RUNNER_CONFIGS = {
+    "playwright": re.compile(r"^playwright\.config\.[cm]?[jt]s$"),
+    "cypress": re.compile(r"^cypress\.config\.[cm]?[jt]s$|^cypress\.json$"),
+    "jest": re.compile(r"^jest\.config\.[cm]?[jt]s(on)?$"),
+    "vitest": re.compile(r"^vitest\.config\.[cm]?[jt]s$"),
+    "pytest": re.compile(r"^(pytest\.ini|conftest\.py)$"),
+    "cucumber": re.compile(r"^cucumber\.(js|cjs|mjs|json|ya?ml)$"),
+}
+TEST_SCRIPT_RE = re.compile(r"(^|:)(test|e2e|cypress|playwright)", re.I)
+
+
+def _walk(root: Path):
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SCAN_SKIP_DIRS and not d.startswith(".") or d in {".github"})
+        for name in sorted(filenames):
+            count += 1
+            if count > SCAN_MAX_FILES:
+                return
+            yield Path(dirpath) / name
+
+
+def _read_text(path: Path, limit: int = 400_000) -> str:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(limit)
+    except OSError:
+        return ""
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()[:160]
+
+
+def scan_scenarios(root: Path) -> dict:
+    """Find the test scenarios a project already has, grouped by origin."""
+    report = {
+        "gherkin": [], "e2e": [], "unit": [], "documented": [], "runners": [], "scripts": [],
+    }
+    for path in _walk(root):
+        rel = path.relative_to(root).as_posix()
+        name = path.name
+        for runner, rx in RUNNER_CONFIGS.items():
+            if rx.match(name):
+                report["runners"].append({"runner": runner, "config": rel})
+        if name == "pyproject.toml" and "[tool.pytest" in _read_text(path, 200_000):
+            report["runners"].append({"runner": "pytest", "config": rel})
+        if name == "package.json" and "node_modules" not in rel:
+            try:
+                scripts = (json.loads(_read_text(path)) or {}).get("scripts") or {}
+            except (json.JSONDecodeError, AttributeError):
+                scripts = {}
+            for key, cmd in scripts.items():
+                if TEST_SCRIPT_RE.search(key):
+                    report["scripts"].append({"file": rel, "name": key, "command": str(cmd)})
+
+        if name.endswith(".feature"):
+            text = _read_text(path)
+            feature, scenarios = "", []
+            for lineno, line in enumerate(text.splitlines(), 1):
+                m = GHERKIN_FEATURE_RE.match(line)
+                if m and not feature:
+                    feature = _slug(m.group(2))
+                m = GHERKIN_SCENARIO_RE.match(line)
+                if m:
+                    scenarios.append({"title": _slug(m.group(2)), "line": lineno})
+            report["gherkin"].append({"file": rel, "feature": feature, "scenarios": scenarios})
+            continue
+
+        if JS_TEST_RE.search(name):
+            text = _read_text(path)
+            if E2E_PATH_RE.search(rel) or ".cy." in name or ".e2e." in name or E2E_IMPORT_RE.search(text[:8000]):
+                tests = []
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    for m in JS_TITLE_RE.finditer(line):
+                        tests.append({"title": _slug(m.group(2)), "line": lineno})
+                report["e2e"].append({"file": rel, "tests": tests})
+            else:
+                report["unit"].append(rel)
+            continue
+
+        if any(rx.match(name) for rx in UNIT_TEST_RES):
+            report["unit"].append(rel)
+            continue
+
+        if path.suffix.lower() in DOC_EXTENSIONS and (DOC_NAME_RE.search(path.stem) or DOC_DIR_RE.search(rel)):
+            if name.lower() in {"readme.md", "changelog.md", "license.txt"}:
+                continue
+            report["documented"].append(rel)
+
+    counts = {
+        "gherkin_files": len(report["gherkin"]),
+        "gherkin_scenarios": sum(len(f["scenarios"]) for f in report["gherkin"]),
+        "e2e_files": len(report["e2e"]),
+        "e2e_tests": sum(len(f["tests"]) for f in report["e2e"]),
+        "unit_files": len(report["unit"]),
+        "documented_files": len(report["documented"]),
+        "runners": len(report["runners"]),
+    }
+    # Unit tests are real tests, but they are not user-facing QA scenarios. They
+    # are executed as whole suites, so they do not make "found" true on their own.
+    found = bool(counts["gherkin_scenarios"] or counts["e2e_tests"] or counts["documented_files"])
+    return {"scanned_at": now(), "root": str(root), "found": found, "counts": counts, "sources": report}
+
+
+def scenario_items(scan: dict) -> list[dict]:
+    """Turn scan results into inventory items for the scenarios category."""
+    items: list[dict] = []
+    src = scan["sources"]
+    for f in src["gherkin"]:
+        for s in f["scenarios"]:
+            items.append({
+                "id": f"scenario:gherkin:{f['file']}::{s['title']}",
+                "kind": "gherkin",
+                "label": s["title"],
+                "metadata": {"origin": "existing", "source": f["file"], "line": s["line"], "feature": f["feature"]},
+            })
+    for f in src["e2e"]:
+        for t in f["tests"]:
+            items.append({
+                "id": f"scenario:e2e:{f['file']}::{t['title']}",
+                "kind": "e2e",
+                "label": t["title"],
+                "metadata": {"origin": "existing", "source": f["file"], "line": t["line"]},
+            })
+    # One item per way of running the automated suites, so that running them is
+    # itself a tracked, recorded execution.
+    seen_suites = set()
+    for s in src["scripts"]:
+        sid = f"scenario:suite:{s['file']}#{s['name']}"
+        if sid not in seen_suites:
+            seen_suites.add(sid)
+            items.append({
+                "id": sid, "kind": "suite", "label": f"{s['name']}: {s['command']}",
+                "metadata": {"origin": "existing", "source": s["file"], "command": s["command"]},
+            })
+    if src["unit"] and not src["scripts"]:
+        for r in src["runners"]:
+            sid = f"scenario:suite:{r['config']}"
+            if sid not in seen_suites:
+                seen_suites.add(sid)
+                items.append({
+                    "id": sid, "kind": "suite", "label": f"{r['runner']} suite",
+                    "metadata": {"origin": "existing", "source": r["config"], "runner": r["runner"]},
+                })
+    return items
+
+
+def scenario_scan(args) -> int:
+    ensure_dirs()
+    require_initialized()
+    scan = scan_scenarios(ROOT)
+    save(SCENARIO_SCAN, scan)
+
+    imported = 0
+    if args.do_import:
+        path = inventory_path(SCENARIOS)
+        existing = {str(x.get("id")): x for x in normalize_inventory(load(path, [])) if x.get("id") is not None}
+        for item in scenario_items(scan):
+            if item["id"] not in existing:
+                imported += 1
+                existing[item["id"]] = {
+                    **item, "profile_id": None, "route": None, "parent_id": None, "discovered_at": now(),
+                }
+        save(path, {"category": SCENARIOS, "items": list(existing.values())})
+
+    state = load(STATE, {}) or {}
+    state["scenario_scan"] = {
+        "scanned_at": scan["scanned_at"], "found": scan["found"], "counts": scan["counts"],
+    }
+    state["updated_at"] = now()
+    save(STATE, state)
+
+    if args.json:
+        print(json.dumps({**scan, "imported": imported}, indent=2, ensure_ascii=False))
+        return 0
+
+    c = scan["counts"]
+    print(f"Scenario scan: {'FOUND' if scan['found'] else 'NONE'}")
+    print(f"  gherkin     files={c['gherkin_files']} scenarios={c['gherkin_scenarios']}")
+    print(f"  e2e         files={c['e2e_files']} tests={c['e2e_tests']}")
+    print(f"  unit        files={c['unit_files']} (executed as whole suites)")
+    print(f"  documented  files={c['documented_files']} (read and import manually)")
+    for d in scan["sources"]["documented"][:20]:
+        print(f"    * {d}")
+    for r in scan["sources"]["runners"]:
+        print(f"  runner      {r['runner']} ({r['config']})")
+    for s in scan["sources"]["scripts"]:
+        print(f"  script      {s['file']}#{s['name']}: {s['command']}")
+    if args.do_import:
+        print(f"imported {imported} new item(s) into the '{SCENARIOS}' inventory")
+    if not scan["found"]:
+        print(
+            "No existing test scenarios. Generate scenarios from the inventory (features, "
+            "workflows, forms, permissions), register them with 'inventory-add --category "
+            "scenarios --kind generated', and execute them."
+        )
+    elif not args.do_import:
+        print("Run again with --import to add the parsed scenarios to the inventory.")
+    print(f"scan written: {SCENARIO_SCAN}")
+    return 0
+
+
+def scenario_list(args) -> int:
+    items = normalize_inventory(load(inventory_path(SCENARIOS), []))
+    results = load_results(SCENARIOS)
+    rows = []
+    for item in items:
+        iid = str(item.get("id"))
+        meta = item.get("metadata") or {}
+        r = results.get(iid) or {}
+        rows.append({
+            "id": iid,
+            "origin": meta.get("origin", "generated" if item.get("kind") == "generated" else ""),
+            "kind": item.get("kind") or "",
+            "title": item.get("label") or "",
+            "source": meta.get("source", ""),
+            "covers": ", ".join(meta.get("covers", []) or []),
+            "steps": meta.get("steps", []) or [],
+            "expected": meta.get("expected", ""),
+            "status": (r.get("status") or "").upper() or "NOT TESTED",
+        })
+    if args.format == "json":
+        out = json.dumps({"rows": rows, "total": len(rows)}, indent=2, ensure_ascii=False)
+    else:
+        lines = ["# Test scenarios", ""]
+        if not rows:
+            lines.append("No test scenarios have been imported or generated yet.")
+        else:
+            lines += ["| ID | Origin | Kind | Title | Source | Covers | Status |", "|---|---|---|---|---|---|---|"]
+            for r in rows:
+                cells = [r["id"], r["origin"], r["kind"], r["title"], r["source"], r["covers"], r["status"]]
+                lines.append("| " + " | ".join(str(x).replace("|", "\\|") for x in cells) + " |")
+            detailed = [r for r in rows if r["steps"] or r["expected"]]
+            if detailed:
+                lines += ["", "## Steps", ""]
+                for r in detailed:
+                    lines.append(f"### {r['title'] or r['id']}")
+                    lines.append("")
+                    for i, step in enumerate(r["steps"], 1):
+                        lines.append(f"{i}. {step}")
+                    if r["expected"]:
+                        lines += ["", f"**Expected:** {r['expected']}"]
+                    lines.append("")
+            pending = sum(1 for r in rows if r["status"] == "NOT TESTED")
+            lines += ["", f"Scenarios: {len(rows)} | not tested: {pending}"]
+        out = "\n".join(lines)
+    if args.out:
+        target = Path(args.out)
+        if not target.is_absolute():
+            target = ROOT / target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(out + "\n", encoding="utf-8")
+        print(f"scenario list written: {target}")
+    else:
+        print(out)
+    return 0
+
+
 def finish(args) -> None:
     code = validate(args)
     if code != 0 and not args.force:
@@ -619,6 +953,18 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--format", choices=["markdown", "json"], default="markdown")
     q.add_argument("--out", help="write to this path instead of stdout")
     q.set_defaults(fn=matrix)
+
+    q = sp.add_parser("scenario-scan",
+                      help="detect the test scenarios the project already has (gherkin, e2e, suites, documents)")
+    q.add_argument("--import", dest="do_import", action="store_true",
+                   help="add the parsed scenarios and suites to the scenarios inventory")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(fn=scenario_scan)
+
+    q = sp.add_parser("scenario-list", help="list the scenarios inventory with steps and status")
+    q.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    q.add_argument("--out", help="write to this path instead of stdout")
+    q.set_defaults(fn=scenario_list)
 
     q = sp.add_parser("finish", help="close the audit run")
     q.add_argument("--force", action="store_true")
