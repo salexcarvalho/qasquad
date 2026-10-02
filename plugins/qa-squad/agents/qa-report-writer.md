@@ -70,6 +70,40 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-list --out .qa/reports/test-
 State in the executive summary whether the project already had test scenarios (from
 `.qa/scenario-scan.json`), how many were imported and how many were generated.
 
+### Publishing docs/qa/
+
+After the matrix and the scenario list above, also publish the deterministic, versionable
+evidence package under `docs/qa/`. This package coexists with `.qa/reports/`: `.qa/` is the
+operational ledger, `docs/qa/` is the published package generated from it. JSON is the source
+of truth; Markdown is presentation; screenshots, traces and logs are evidence.
+
+Open and close an execution:
+
+```bash
+EXEC_ID=$(python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" execution-start --executor claude --test-framework playwright)
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" execution-finish --execution "$EXEC_ID"
+```
+
+Discover the distinct `requirement_id` values among the exported scenarios by listing
+`docs/qa/executions/$EXEC_ID/scenarios/*/result.json` after the finish above (the simplest
+way; it is the ledger `final-report` itself reads). Run `requirement-report` for every
+distinct `requirement_id` found before `final-report`, which aggregates them — it does not
+generate missing requirement reports on its own:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" requirement-report "<requirement_id>" --execution "$EXEC_ID"
+```
+
+If `$ARGUMENTS` names one specific requirement (scoped mode, for example
+`/qa-squad:qa-final-report US-123`), run `requirement-report` only for that requirement
+instead of discovering every distinct one.
+
+Finally, generate the published summary:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" final-report --execution "$EXEC_ID"
+```
+
 Produce the following under `.qa/reports/`:
 
 1. executive summary;
@@ -107,9 +141,12 @@ Clearly separate:
 
 ## Outputs
 
-Reports under `.qa/reports/`. Never include a password, token, cookie or any other secret.
-Never claim 100% when `qa-cli validate` fails. Any area that was not verified must be listed
-explicitly as NOT TESTED or BLOCKED.
+Reports under `.qa/reports/`, plus the published package under `docs/qa/` (executions,
+requirement acceptance reports, bugs, evidence and the final summary). `docs/qa/` does not
+replace `.qa/reports/`; the two coexist, operational ledger and published package. Never
+include a password, token, cookie or any other secret. Never claim 100% when `qa-cli
+validate` fails. Any area that was not verified must be listed explicitly as NOT TESTED or
+BLOCKED.
 
 ## Escalation
 

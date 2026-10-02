@@ -83,7 +83,9 @@ specialized passes yourself.
    covered without a reason.
 9. Ask `qa-coverage-auditor` for an independent review before the final report.
 10. Generate regression E2E tests only once the critical flows are understood.
-11. Close with `qa-report-writer` and `qa-cli finish` only when the coverage criteria are met.
+11. Close with `qa-report-writer` and `qa-cli finish` only when the coverage criteria are
+    met. Publishing the deterministic `docs/qa/` evidence package happens inside this step,
+    as part of `qa-report-writer`'s own procedure; it is not a separate delegation.
 
 ## Navigation coverage
 

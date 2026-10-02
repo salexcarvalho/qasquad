@@ -13,7 +13,7 @@ AI testing often fails in a predictable way: the agent visits a few screens, fin
 Core capabilities:
 
 - 20 specialized QA agents
-- 25 reusable QA skills
+- 27 reusable QA skills
 - browser-driven testing through Playwright MCP
 - menu/submenu/page/tab/action coverage by profile
 - detection of existing test scenarios, and generation plus execution when there are none
@@ -22,6 +22,8 @@ Core capabilities:
 - authorization and broken-access-control checks in authorized environments
 - error and resilience testing
 - persistent project-local `.qa/` state
+- deterministic, versionable evidence package under `docs/qa/` (executions, per-requirement
+  acceptance reports, bugs, evidence, final summary)
 - deterministic Stop hook for incomplete active audits
 - secret-write protection for `.env*` during QA runs
 - E2E regression generation
@@ -79,7 +81,7 @@ qasquad/
 │       ├── .claude-plugin/
 │       │   └── plugin.json
 │       ├── agents/          # 20 QA agents
-│       ├── skills/          # 25 QA skills
+│       ├── skills/          # 27 QA skills
 │       ├── hooks/
 │       ├── bin/
 │       │   └── qa-cli
@@ -161,6 +163,8 @@ Useful commands:
 /qa-squad:qa-gap-analysis
 /qa-squad:qa-coverage-matrix
 /qa-squad:qa-final-report
+/qa-squad:qa-bugs
+/qa-squad:qa-retest
 ```
 
 ## Deterministic coverage
