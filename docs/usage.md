@@ -44,6 +44,8 @@ accessibility and error handling.
 /qa-squad:qa-gap-analysis
 /qa-squad:qa-coverage-matrix
 /qa-squad:qa-final-report
+/qa-squad:qa-bugs
+/qa-squad:qa-retest
 ```
 
 ## Test scenarios
@@ -70,6 +72,22 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-scan --import
 `scenarios` is a core category and cannot be declared empty, so an audit cannot close until
 the scan has run and every scenario, existing or generated, has a result. The list is
 published with `qa-cli scenario-list --out .qa/reports/test-scenarios.md`.
+
+## Publishing docs/qa/
+
+`docs/qa/` is the deterministic, versionable evidence package generated from the `.qa/`
+ledger (see [architecture](architecture.md#qa-versus-docsqa)). Use the skills, not the raw
+`qa-cli` commands, for day-to-day work:
+
+- `/qa-squad:qa-final-report` — generates the final report and, as part of the same pass,
+  publishes `docs/qa/` (executions, per-requirement acceptance reports, bugs, evidence and
+  summary). Pass a `requirement_id` as an argument to publish or regenerate only that
+  requirement's acceptance report.
+- `/qa-squad:qa-bugs` — lists the bugs recorded under `docs/qa/bugs/`, optionally filtered by
+  `--status open|retested` or `--classification`.
+- `/qa-squad:qa-retest <bug-id>` — re-executes the scenario behind a bug, opens a new
+  execution, and appends the outcome to that bug's retest history without erasing prior
+  attempts.
 
 ## Reading coverage
 

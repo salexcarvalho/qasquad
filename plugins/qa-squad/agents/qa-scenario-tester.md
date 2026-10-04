@@ -98,6 +98,13 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" inventory-add --category scenarios \
 
 Skip files that turn out not to contain scenarios, and say so in your output.
 
+When a requirement identifier is available from real evidence — a US/PBI/issue number cited
+in the document itself, in the scenario's source file name, in a related commit, in the
+product UI, in the code, or in `.qa/project-context.md` — include it as `metadata.requirement_id`
+on the same `inventory-add` call. Never invent a requirement number. When there is no such
+evidence, omit the field entirely; downstream reports then show the literal `NOT_AVAILABLE`
+rather than a guess.
+
 ### 3. Generate when none exist, or complement when coverage is partial
 
 When the scan reports `NONE`, generate scenarios from the inventory. When scenarios exist but
@@ -125,6 +132,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" inventory-add --category scenarios \
 Base every scenario on evidence from the code, the UI, the documentation or the supplied
 context. Do not invent rules that the product does not show.
 
+The same evidence-based rule applies to `metadata.requirement_id` here: include it only when
+the covered inventory item, the code, or the project context actually names a requirement.
+Otherwise leave the field out.
+
 ### 4. Execute
 
 Execute every scenario in the inventory that has no result yet:
@@ -149,6 +160,37 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" record --category scenarios --id "<sc
 When a scenario fails, record a finding with the `qa-record-finding` pattern and pass its ID
 with `--finding-id`. A failing existing test is a finding about the product or about the
 test; say which one, with evidence.
+
+Classify every `failed` result into exactly one cause before moving on:
+
+| Classification | Meaning |
+|---|---|
+| `PRODUCT_DEFECT` | The observed behavior diverges from the requirement, with sufficient evidence of that divergence. |
+| `TEST_AUTOMATION_FAILURE` | The test itself is broken (fragile selector, stale fixture, wrong assertion) and the product is not implicated. |
+| `ENVIRONMENT_FAILURE` | The environment was unavailable or a dependent service was down. |
+| `TEST_DATA_FAILURE` | The test data was missing or invalid. |
+| `BLOCKED` | The scenario could not be concluded because of an external dependency. |
+| `UNDETERMINED` | There is not enough evidence to decide. Never force a cause; when in doubt, use this. |
+
+Separate the OBSERVED FACT (what you actually saw, with evidence) from any TECHNICAL
+HYPOTHESIS (your best explanation). Never present a hypothesis as a confirmed cause. Only
+classify as `PRODUCT_DEFECT` when there is real evidence of a divergence from the
+requirement; otherwise prefer `UNDETERMINED`.
+
+When the task's context already carries a current `execution_id` (meaning someone ran
+`qa-cli execution-start` before this agent and will run `qa-cli execution-finish` afterward
+to publish `docs/qa/`), promote every classified `failed` result to a bug report:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" bug-report --scenario "<scenario id>" \
+  --execution "<execution id>" --classification <classification from the table above> \
+  --summary "<short summary>" --observed-fact "<what was actually seen>" \
+  [--hypothesis "<technical hypothesis, never stated as fact>"]
+```
+
+When no `execution_id` is available in the task's context, do not call `bug-report` yourself.
+Instead, write the classification, the observed fact and any hypothesis into the `--notes`
+of the normal `record` call, so it can be promoted to a bug report later during publication.
 
 ### 5. Publish the scenario list
 

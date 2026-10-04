@@ -46,6 +46,35 @@ recorded in `.qa/declared-empty.json`.
 The separation matters: an agent can be persuaded, a hook cannot. The Stop hook is what
 turns "please finish the audit" into an enforced constraint.
 
+## `.qa/` versus `docs/qa/`
+
+`.qa/` is the operational ledger: inventories, raw results, findings and working reports,
+local to the machine running the audit. `docs/qa/` is the published, versionable evidence
+package generated from that ledger: executions, per-requirement acceptance reports, bug
+reports, sanitized evidence, and a final summary. The two coexist and serve different
+purposes; publishing to `docs/qa/` never replaces `.qa/reports/`.
+
+Inside `docs/qa/`, JSON is the source of truth, Markdown is presentation generated from it,
+and screenshots, traces and logs are evidence. Every exported scenario result lands in one
+of four states:
+
+`PASS | FAIL | BLOCKED | NOT_EXECUTED`
+
+(`NOT_APPLICABLE` also exists but sits outside the acceptance denominator.) A requirement's
+acceptance report resolves deterministically to one of four outcomes:
+
+`ACCEPTED | NOT_ACCEPTED | BLOCKED | INCOMPLETE`
+
+Only a bug classified as `PRODUCT_DEFECT` can move a requirement to `NOT_ACCEPTED`. Every
+other failure cause leaves the requirement `BLOCKED`, because the failure has not been
+confirmed as a product defect yet. A failure's cause is always one of six categories:
+
+`PRODUCT_DEFECT | TEST_AUTOMATION_FAILURE | ENVIRONMENT_FAILURE | TEST_DATA_FAILURE | BLOCKED | UNDETERMINED`
+
+`requirement_id` is an optional field on a scenario's `metadata`, exactly like the existing
+`covers`/`preconditions`/`steps`/`expected` fields. When it is absent, anything that depends
+on it reports the literal `NOT_AVAILABLE` rather than a guess.
+
 ## Coverage categories
 
 Core categories gate completion by default:

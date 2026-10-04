@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented here.
 
+## [0.4.0] - 2026-10-02
+
+### Added
+- Deterministic, versionable evidence package under `docs/qa/`, generated from the `.qa/`
+  ledger: `executions/`, `reports/<requirement_id>/`, `bugs/<bug_id>/`,
+  `evidence/<execution_id>/<scenario_id>/`, and `summary/<execution_id>/`. `docs/qa/`
+  coexists with `.qa/reports/`: the ledger is operational, the package is published.
+- New `qa-cli` commands: `execution-start`, `execution-finish`, `requirement-report`,
+  `bug-report`, `retest`, `bugs-list`, `final-report`.
+- Automatic sanitization of secrets in text evidence copied into `docs/qa/evidence/`.
+- A deterministic acceptance outcome per requirement: `ACCEPTED`, `NOT_ACCEPTED`, `BLOCKED`
+  or `INCOMPLETE`. Only a bug classified as `PRODUCT_DEFECT` can move a requirement to
+  `NOT_ACCEPTED`; every other failure cause leaves it `BLOCKED` until confirmed.
+- Failure-cause classification before a failing scenario is promoted to a bug report:
+  `PRODUCT_DEFECT`, `TEST_AUTOMATION_FAILURE`, `ENVIRONMENT_FAILURE`, `TEST_DATA_FAILURE`,
+  `BLOCKED`, `UNDETERMINED`. `qa-scenario-tester` separates the observed fact from any
+  technical hypothesis and never presents the hypothesis as a confirmed cause.
+- Optional `metadata.requirement_id` on `scenarios` inventory items, evidence-based only;
+  when absent, downstream reports show `NOT_AVAILABLE` rather than a guess.
+- `qa-bugs` and `qa-retest` skills: list recorded bugs and re-execute the scenario behind a
+  bug, appending to its retest history without erasing prior attempts. No new agent was
+  added; `qa-retest` reuses `qa-scenario-tester`.
+
+### Changed
+- `qa-report-writer` now publishes `docs/qa/` as part of its own procedure (`execution-start`
+  / `execution-finish`, `requirement-report` per distinct requirement, `final-report`).
+- `qa-final-report` accepts an optional `requirement_id` scope to publish or regenerate a
+  single requirement's acceptance report.
+
 ## [0.3.0] - 2026-09-24
 
 ### Added

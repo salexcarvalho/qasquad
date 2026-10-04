@@ -36,6 +36,13 @@ To make an audit formally gate on, for example, security and accessibility, move
 
 Those categories must then be inventoried and executed, or explicitly declared empty.
 
+## `docs/qa/` publishing
+
+`docs/qa/` has no configuration of its own; it reuses `.qa/config.json` for everything it
+needs (coverage categories, allowed statuses, severity scale) and reads its inputs from the
+same `.qa/` ledger. See [architecture](architecture.md#qa-versus-docsqa) and
+[usage](usage.md#publishing-docsqa).
+
 ## Project context
 
 `.qa/project-context.md` carries domain knowledge without contaminating the generic agents.
