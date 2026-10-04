@@ -1,0 +1,44 @@
+{
+  "name": "@salexcarvalho/qasquad",
+  "version": "0.4.0",
+  "description": "Installer for the QA Squad Claude Code plugin: autonomous multi-agent QA with deterministic coverage enforcement.",
+  "license": "MIT",
+  "author": "Sergio Alexandre de Carvalho (https://github.com/salexcarvalho)",
+  "homepage": "https://github.com/salexcarvalho/qasquad#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/salexcarvalho/qasquad.git"
+  },
+  "bugs": {
+    "url": "https://github.com/salexcarvalho/qasquad/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "qa",
+    "testing",
+    "agents",
+    "playwright",
+    "e2e"
+  ],
+  "bin": {
+    "qasquad": "bin/qasquad.js"
+  },
+  "files": [
+    "bin",
+    ".claude-plugin",
+    "plugins",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/npm-package.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
