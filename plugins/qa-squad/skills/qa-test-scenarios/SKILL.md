@@ -23,6 +23,9 @@ without a result. If none exist, generate scenarios from the inventory and execu
 the inventory is still empty, run discovery first (`/qa-squad:qa-discover-system`) instead of
 inventing scenarios.
 
+Scenarios that carry a `requirement_id` become traceable all the way to the per-requirement
+acceptance report published under `docs/qa/reports/`.
+
 Record one result per scenario ID and finish with:
 
 ```bash

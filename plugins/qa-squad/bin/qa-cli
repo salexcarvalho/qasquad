@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +38,17 @@ CONFIG = QA / "config.json"
 DECLARED_EMPTY = QA / "declared-empty.json"
 
 SCENARIO_SCAN = QA / "scenario-scan.json"
+
+# Deterministic, publishable QA artifacts. This subsystem is read-only with
+# respect to `.qa/` (it only reads the inventory and recorded results from
+# there) except for stamping `bug_id` onto a result it already exported into
+# `docs/qa/`, which is its own territory.
+DOCS_QA = ROOT / "docs" / "qa"
+DOCS_EXECUTIONS = DOCS_QA / "executions"
+DOCS_REPORTS = DOCS_QA / "reports"
+DOCS_BUGS = DOCS_QA / "bugs"
+DOCS_EVIDENCE = DOCS_QA / "evidence"
+DOCS_SUMMARY = DOCS_QA / "summary"
 
 # Core categories gate audit completion by default. `scenarios` holds the test
 # scenarios themselves: the ones that already exist in the project, or the ones
@@ -71,6 +83,32 @@ SEVERITY_ORDER = ["critical", "high", "medium", "low"]
 
 CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
+# Deterministic export statuses. `not_applicable` is a status of its own: it is
+# shown, but it never counts for or against acceptance.
+STATUS_MAP = {
+    "passed": "PASS",
+    "failed": "FAIL",
+    "blocked": "BLOCKED",
+    "not_applicable": "NOT_APPLICABLE",
+}
+EXPORT_STATUSES = ["PASS", "FAIL", "BLOCKED", "NOT_EXECUTED", "NOT_APPLICABLE"]
+
+# Canonical list — keep plugins/qa-squad/agents/qa-scenario-tester.md's classification
+# guidance in sync with this.
+BUG_CLASSIFICATIONS = [
+    "PRODUCT_DEFECT", "TEST_AUTOMATION_FAILURE", "ENVIRONMENT_FAILURE",
+    "TEST_DATA_FAILURE", "BLOCKED", "UNDETERMINED",
+]
+# Classifications that keep a FAIL from being a confirmed product defect, but
+# also keep it from being clean: the requirement cannot be accepted, but it
+# also cannot be rejected on this evidence alone.
+INCONCLUSIVE_BUG_CLASSIFICATIONS = {
+    "TEST_AUTOMATION_FAILURE", "ENVIRONMENT_FAILURE", "TEST_DATA_FAILURE",
+    "UNDETERMINED", "BLOCKED",
+}
+
+BINARY_EVIDENCE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".zip"}
+
 
 def now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -91,6 +129,11 @@ def save(path: Path, data) -> None:
 
 def ensure_dirs() -> None:
     for p in [INV, RES, FIND, REPORTS, EVIDENCE / "screenshots", EVIDENCE / "traces", EVIDENCE / "videos"]:
+        p.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_docs_dirs() -> None:
+    for p in [DOCS_EXECUTIONS, DOCS_REPORTS, DOCS_BUGS, DOCS_EVIDENCE, DOCS_SUMMARY]:
         p.mkdir(parents=True, exist_ok=True)
 
 
@@ -884,6 +927,800 @@ def finish(args) -> None:
     print(f"QA run closed: {state['status']}")
 
 
+# --------------------------------------------------------------- docs/qa export
+#
+# A second, publishable surface on top of `.qa/`. It never writes into `.qa/`
+# (the one exception is stamping `bug_id` onto a result already exported into
+# `docs/qa/`). Everything here derives from the inventory and results that the
+# categories above already produce, so there is nothing to invent: a scenario
+# with no recorded result is NOT_EXECUTED, never guessed at.
+
+
+def git_value(args_list: list[str]) -> str:
+    """Return a trimmed git value, or the literal NOT_AVAILABLE.
+
+    Never raises: a project outside a git repo, or without git installed, is a
+    valid state, not an error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args_list], cwd=ROOT, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "NOT_AVAILABLE"
+    if result.returncode != 0:
+        return "NOT_AVAILABLE"
+    value = result.stdout.strip()
+    return value if value else "NOT_AVAILABLE"
+
+
+def scenario_dir_name(scenario_id: str) -> str:
+    """A filesystem-safe, unique, human-readable folder name for a scenario ID.
+
+    Scenario IDs may contain characters that are unsafe or ambiguous as a
+    directory name (':', '/', spaces). The same scenario ID always maps to the
+    same folder name, and the trailing hash keeps two different IDs that
+    sanitize to the same prefix from colliding.
+    """
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", scenario_id)[:120]
+    digest = hashlib.sha1(scenario_id.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
+
+
+def scenario_metadata(scenario_id: str) -> dict:
+    """Look up the metadata of one scenario straight from the `.qa/` inventory."""
+    for item in normalize_inventory(load(inventory_path(SCENARIOS), [])):
+        if str(item.get("id")) == scenario_id:
+            return item.get("metadata") or {}
+    return {}
+
+
+def map_scenario_status(result: dict | None) -> str:
+    if not result:
+        return "NOT_EXECUTED"
+    return STATUS_MAP.get(result.get("status"), "NOT_EXECUTED")
+
+
+def evidence_subdir(path: Path) -> str:
+    ext = path.suffix.lower()
+    name_lower = path.name.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "screenshots"
+    if ext in {".webm", ".mp4"}:
+        return "videos"
+    if ext == ".zip":
+        return "traces"
+    if ext == ".log":
+        return "logs"
+    if ext in {".txt", ".json"}:
+        if "console" in name_lower:
+            return "console"
+        if "network" in name_lower:
+            return "network"
+    return "logs"
+
+
+def is_text_evidence(path: Path) -> bool:
+    return path.suffix.lower() not in BINARY_EVIDENCE_EXTENSIONS
+
+
+_SECRET_KV_PATTERNS = [
+    re.compile(r"(authorization\s*:\s*bearer\s+)(\S+)", re.I),
+    re.compile(r"(password\s*[:=]\s*)(\S+)", re.I),
+    re.compile(r"(token\s*[:=]\s*)(\S+)", re.I),
+    re.compile(r"(cookie\s*:\s*)(.+)", re.I),
+    re.compile(r"(api[_-]?key\s*[:=]\s*)(\S+)", re.I),
+]
+_SECRET_WHOLE_PATTERNS = [
+    re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}"),  # CPF, formatted
+    re.compile(r"(?<!\d)\d{11}(?!\d)"),  # CPF, unformatted
+]
+
+
+def sanitize_text(text: str) -> tuple[str, bool]:
+    """Redact likely secrets from evidence text before it is published.
+
+    Returns (clean_text, was_redacted). The rest of the line is kept so the
+    evidence stays readable; only the captured secret value is replaced.
+    """
+    redacted = False
+
+    def repl_kv(m: re.Match) -> str:
+        nonlocal redacted
+        redacted = True
+        return m.group(1) + "***REDACTED***"
+
+    def repl_whole(_m: re.Match) -> str:
+        nonlocal redacted
+        redacted = True
+        return "***REDACTED***"
+
+    for rx in _SECRET_KV_PATTERNS:
+        text = rx.sub(repl_kv, text)
+    for rx in _SECRET_WHOLE_PATTERNS:
+        text = rx.sub(repl_whole, text)
+    return text, redacted
+
+
+def copy_scenario_evidence(execution_id: str, dirname: str, evidence_list: list) -> tuple[list, bool]:
+    """Copy one scenario's evidence files into docs/qa/evidence, sanitized.
+
+    Files that no longer exist on disk are skipped silently: a missing
+    evidence file must never break an export. Returns the new, docs/qa-relative
+    evidence paths and whether anything had to be redacted.
+    """
+    new_evidence: list[str] = []
+    redacted_any = False
+    for rel in evidence_list or []:
+        if not rel:
+            continue
+        src = Path(rel)
+        if not src.is_absolute():
+            src = ROOT / rel
+        if not src.exists() or not src.is_file():
+            continue
+        subdir = evidence_subdir(src)
+        dest_dir = DOCS_EVIDENCE / execution_id / dirname / subdir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        if is_text_evidence(src):
+            try:
+                raw = src.read_text(encoding="utf-8", errors="replace")
+                clean, was_redacted = sanitize_text(raw)
+                dest.write_text(clean, encoding="utf-8")
+                if was_redacted:
+                    redacted_any = True
+            except OSError:
+                # Could not safely read this file as text. Never persist the
+                # raw bytes under uncertainty.
+                dest.write_text("EVIDENCE_REDACTED", encoding="utf-8")
+                redacted_any = True
+        else:
+            try:
+                shutil.copy2(src, dest)
+            except OSError:
+                continue
+        new_evidence.append(dest.relative_to(ROOT).as_posix())
+    return new_evidence, redacted_any
+
+
+def materialize_docs_readme() -> None:
+    readme = DOCS_QA / "README.md"
+    if readme.exists():
+        return
+    templates = Path(__file__).resolve().parent / "templates"
+    src = templates / "docs-qa-README.md"
+    if src.exists():
+        DOCS_QA.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, readme)
+
+
+def execution_start(args) -> None:
+    ensure_docs_dirs()
+    execution_id = f"exec-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    env: dict[str, str] = {}
+    for kv in args.environment or []:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            env[k] = v
+    branch = git_value(["rev-parse", "--abbrev-ref", "HEAD"])
+    commit = git_value(["rev-parse", "HEAD"])
+    data = {
+        "execution_id": execution_id,
+        "project": ROOT.name,
+        "branch": branch,
+        "commit": commit,
+        "environment": env,
+        "base_url": args.base_url or "NOT_AVAILABLE",
+        "started_at": now(),
+        "finished_at": None,
+        "executor": args.executor or "NOT_AVAILABLE",
+        "test_framework": args.test_framework or "NOT_AVAILABLE",
+        "browser": args.browser or "NOT_AVAILABLE",
+        "browser_version": args.browser_version or "NOT_AVAILABLE",
+        "status": "in_progress",
+    }
+    exec_dir = DOCS_EXECUTIONS / execution_id
+    save(exec_dir / "execution.json", data)
+    save(exec_dir / "environment.json", {
+        "branch": branch,
+        "commit": commit,
+        "base_url": data["base_url"],
+        "browser": data["browser"],
+        "browser_version": data["browser_version"],
+        "environment": env,
+    })
+    materialize_docs_readme()
+    print(execution_id)
+
+
+def format_numbered(items: list) -> str:
+    if not items:
+        return "NOT_AVAILABLE"
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(items, 1))
+
+
+def write_scenario_report(scen_dir: Path, result_doc: dict, meta: dict, execution: dict) -> None:
+    preconditions = meta.get("preconditions") or "NOT_AVAILABLE"
+    steps_text = format_numbered(meta.get("steps") or [])
+    expected = meta.get("expected") or "NOT_AVAILABLE"
+    obtained = result_doc.get("notes") or "NOT_AVAILABLE"
+
+    evidence_list = result_doc.get("evidence") or []
+    if evidence_list:
+        evidence_lines = "\n".join(
+            f"- [{Path(e).name}]({os.path.relpath(ROOT / e, scen_dir)})" for e in evidence_list
+        )
+    else:
+        evidence_lines = "No evidence recorded."
+
+    lines = [
+        "# Scenario",
+        "",
+        f"ID: {result_doc['scenario_id']}",
+        f"Requirement: {result_doc.get('requirement_id') or 'NOT_AVAILABLE'}",
+        f"Rule: {meta.get('business_rule') or 'NOT_AVAILABLE'}",
+        f"Acceptance criteria: {meta.get('acceptance_criteria') or 'NOT_AVAILABLE'}",
+        "",
+        "## Objective",
+        "",
+        result_doc.get("label") or "NOT_AVAILABLE",
+        "",
+        "## Preconditions",
+        "",
+        preconditions,
+        "",
+        "## Steps executed",
+        "",
+        steps_text,
+        "",
+        "## Expected result",
+        "",
+        expected,
+        "",
+        "## Actual result",
+        "",
+        obtained,
+        "",
+        "## Status",
+        "",
+        result_doc["status"],
+        "",
+        "## Evidence",
+        "",
+        evidence_lines,
+        "",
+        "## Environment",
+        "",
+        f"Execution: {execution.get('execution_id')} - Commit: {execution.get('commit')} - "
+        f"Environment: {execution.get('base_url')}",
+        "",
+        "## Notes",
+        "",
+        result_doc.get("notes") or "",
+        "",
+    ]
+    (scen_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def execution_finish(args) -> int:
+    ensure_dirs()
+    ensure_docs_dirs()
+    require_initialized()
+    execution_id = args.execution
+    exec_dir = DOCS_EXECUTIONS / execution_id
+    exec_path = exec_dir / "execution.json"
+    execution = load(exec_path)
+    if execution is None:
+        raise SystemExit(f"Execution '{execution_id}' not found. Run 'qa-cli execution-start' first.")
+    if execution.get("finished_at"):
+        raise SystemExit(
+            f"Execution '{execution_id}' is already finished and is immutable. Start a new "
+            "execution with 'qa-cli execution-start' instead of redoing this one."
+        )
+    status_value = args.status or "COMPLETED"
+
+    items = normalize_inventory(load(inventory_path(SCENARIOS), []))
+    results = load_results(SCENARIOS)
+    counts = {s: 0 for s in EXPORT_STATUSES}
+    for item in items:
+        sid = str(item.get("id"))
+        result = results.get(sid)
+        status_label = map_scenario_status(result)
+        counts[status_label] += 1
+        meta = item.get("metadata") or {}
+        dirname = scenario_dir_name(sid)
+        scen_dir = exec_dir / "scenarios" / dirname
+        new_evidence, redacted_any = copy_scenario_evidence(
+            execution_id, dirname, (result or {}).get("evidence") or [],
+        )
+        notes = (result or {}).get("notes") or ""
+        if redacted_any:
+            suffix = "Evidence sanitized: one or more secrets were redacted before export."
+            notes = f"{notes} {suffix}".strip()
+        result_doc = {
+            "scenario_id": sid,
+            "requirement_id": meta.get("requirement_id") or "NOT_AVAILABLE",
+            "status": status_label,
+            "kind": item.get("kind") or "",
+            "label": item.get("label") or "",
+            "covers": meta.get("covers") or [],
+            "evidence": new_evidence,
+            "notes": notes,
+            "tested_at": (result or {}).get("tested_at"),
+            "bug_id": None,
+        }
+        save(scen_dir / "result.json", result_doc)
+        write_scenario_report(scen_dir, result_doc, meta, execution)
+
+    execution["finished_at"] = now()
+    execution["status"] = status_value
+    save(exec_path, execution)
+    print(
+        f"execution {execution_id} finished: status={status_value} "
+        + " ".join(f"{k}={v}" for k, v in counts.items())
+    )
+    return 0
+
+
+def iter_exported_results(execution_id: str) -> list[dict]:
+    scenarios_dir = DOCS_EXECUTIONS / execution_id / "scenarios"
+    out = []
+    if scenarios_dir.exists():
+        for d in sorted(scenarios_dir.iterdir()):
+            r = load(d / "result.json")
+            if r:
+                out.append(r)
+    return out
+
+
+def compute_acceptance(requirement_id: str, execution_id: str, execution: dict, matched: list[dict]) -> dict:
+    counts = {s: 0 for s in EXPORT_STATUSES}
+    for r in matched:
+        counts[r.get("status", "NOT_EXECUTED")] = counts.get(r.get("status", "NOT_EXECUTED"), 0) + 1
+
+    fails_with_product_defect = False
+    fails_without_bug = False
+    fails_inconclusive = False
+    for r in matched:
+        if r.get("status") != "FAIL":
+            continue
+        bug_id = r.get("bug_id")
+        if not bug_id:
+            fails_without_bug = True
+            continue
+        bug = load(DOCS_BUGS / bug_id / "bug.json")
+        classification = (bug or {}).get("classification")
+        if classification == "PRODUCT_DEFECT":
+            fails_with_product_defect = True
+        elif classification in INCONCLUSIVE_BUG_CLASSIFICATIONS:
+            fails_inconclusive = True
+        else:
+            # Missing or unreadable bug file: treated the same as "no bug yet".
+            fails_without_bug = True
+
+    if fails_with_product_defect:
+        result = "NOT_ACCEPTED"
+    elif counts.get("BLOCKED", 0) > 0 or fails_without_bug or fails_inconclusive:
+        result = "BLOCKED"
+    elif counts.get("NOT_EXECUTED", 0) > 0:
+        result = "INCOMPLETE"
+    elif counts.get("PASS", 0) > 0:
+        result = "ACCEPTED"
+    else:
+        result = "INCOMPLETE"
+
+    bug_ids = sorted({r["bug_id"] for r in matched if r.get("bug_id")})
+    return {
+        "requirement_id": requirement_id,
+        "execution_id": execution_id,
+        "branch": execution.get("branch"),
+        "commit": execution.get("commit"),
+        "environment": execution.get("base_url"),
+        "total_scenarios": len(matched),
+        "pass": counts.get("PASS", 0),
+        "fail": counts.get("FAIL", 0),
+        "blocked": counts.get("BLOCKED", 0),
+        "not_executed": counts.get("NOT_EXECUTED", 0),
+        "not_applicable": counts.get("NOT_APPLICABLE", 0),
+        "bugs": bug_ids,
+        "scenarios": [r["scenario_id"] for r in matched],
+        "result": result,
+        "generated_at": now(),
+    }
+
+
+def write_requirement_report(requirement_id: str, report: dict) -> None:
+    out_dir = DOCS_REPORTS / requirement_id
+    save(out_dir / "acceptance.json", report)
+    exec_dir = DOCS_EXECUTIONS / report["execution_id"]
+    lines = [
+        "# Acceptance report",
+        "",
+        f"Requirement: {requirement_id}",
+        f"Branch: {report['branch']}",
+        f"Commit: {report['commit']}",
+        f"Environment: {report['environment']}",
+        "",
+        f"Total scenarios: {report['total_scenarios']}",
+        f"PASS: {report['pass']}",
+        f"FAIL: {report['fail']}",
+        f"BLOCKED: {report['blocked']}",
+        f"NOT_EXECUTED: {report['not_executed']}",
+        "",
+        f"Bugs found: {', '.join(report['bugs']) if report['bugs'] else 'None'}",
+        "",
+        "Scenarios:",
+    ]
+    for sid in report["scenarios"]:
+        dirname = scenario_dir_name(sid)
+        scen_dir = exec_dir / "scenarios" / dirname
+        result = load(scen_dir / "result.json") or {}
+        rel = os.path.relpath(scen_dir / "report.md", out_dir)
+        lines.append(f"- {sid}: {result.get('status', 'NOT_EXECUTED')} ({rel})")
+    lines += ["", f"RESULT: {report['result']}"]
+    (out_dir / "ACCEPTANCE-REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def requirement_report(args) -> int:
+    ensure_docs_dirs()
+    execution_id = args.execution
+    execution = load(DOCS_EXECUTIONS / execution_id / "execution.json")
+    if execution is None:
+        raise SystemExit(f"Execution '{execution_id}' not found.")
+    if not execution.get("finished_at"):
+        raise SystemExit(
+            f"Execution '{execution_id}' has not been finished yet. Run 'qa-cli execution-finish "
+            f"--execution {execution_id}' before generating a requirement report."
+        )
+    requirement_id = args.requirement_id
+    matched = [
+        r for r in iter_exported_results(execution_id)
+        if r.get("requirement_id") == requirement_id
+    ]
+    if not matched:
+        raise SystemExit(
+            f"No scenario in execution '{execution_id}' points to requirement '{requirement_id}'. "
+            "Nothing can be reported without data."
+        )
+    report = compute_acceptance(requirement_id, execution_id, execution, matched)
+    write_requirement_report(requirement_id, report)
+    print(report["result"])
+    return 0
+
+
+def retest_table(history: list[dict]) -> str:
+    if not history:
+        return "No retest recorded yet."
+    lines = ["| execution_id | result | tested_at |", "|---|---|---|"]
+    for h in history:
+        lines.append(f"| {h.get('execution_id')} | {h.get('result')} | {h.get('tested_at')} |")
+    return "\n".join(lines)
+
+
+def write_bug_report(bug_dir: Path, bug: dict) -> None:
+    meta = scenario_metadata(bug.get("scenario_id", ""))
+    preconditions = meta.get("preconditions") or "NOT_AVAILABLE"
+    steps_text = format_numbered(meta.get("steps") or [])
+    expected = meta.get("expected") or "NOT_AVAILABLE"
+
+    evidence = bug.get("evidence") or []
+    evidence_lines = "\n".join(f"- {e}" for e in evidence) if evidence else "No evidence recorded."
+    screenshots = [e for e in evidence if "/screenshots/" in e]
+    logs = [e for e in evidence if "/logs/" in e]
+    console = [e for e in evidence if "/console/" in e]
+    network = [e for e in evidence if "/network/" in e]
+
+    def section(items: list) -> str:
+        return "\n".join(f"- {e}" for e in items) if items else "None."
+
+    lines = [
+        "# Bug report",
+        "",
+        "## Identification",
+        "",
+        f"Bug ID: {bug['bug_id']}",
+        f"Requirement: {bug.get('requirement_id') or 'NOT_AVAILABLE'}",
+        f"Scenario: {bug.get('scenario_id')}",
+        f"Execution: {bug.get('execution_id')}",
+        f"Commit: {bug.get('commit')}",
+        "",
+        "## Summary",
+        "",
+        bug.get("summary") or "NOT_AVAILABLE",
+        "",
+        "## Preconditions",
+        "",
+        preconditions,
+        "",
+        "## Steps to reproduce",
+        "",
+        steps_text,
+        "",
+        "## Expected result",
+        "",
+        expected,
+        "",
+        "## Observed result",
+        "",
+        bug.get("observed_fact") or "NOT_AVAILABLE",
+        "",
+        "## Evidence",
+        "",
+        evidence_lines,
+        "",
+        "## Screenshots",
+        "",
+        section(screenshots),
+        "",
+        "## Logs",
+        "",
+        section(logs),
+        "",
+        "## Console",
+        "",
+        section(console),
+        "",
+        "## Network",
+        "",
+        section(network),
+        "",
+        "## Environment",
+        "",
+        f"Execution: {bug.get('execution_id')} - Commit: {bug.get('commit')} - "
+        f"Environment: {bug.get('environment') or 'NOT_AVAILABLE'}",
+        "",
+        "## Severity",
+        "",
+        bug.get("severity") or "NOT_AVAILABLE",
+        "",
+        "## Impact",
+        "",
+        bug.get("impact") or "NOT_AVAILABLE",
+        "",
+        "## Observed fact",
+        "",
+        bug.get("observed_fact") or "NOT_AVAILABLE",
+        "",
+        "## Technical hypothesis",
+        "",
+        # Deliberately kept separate from "Observed fact": a hypothesis is
+        # never presented as a confirmed cause.
+        bug.get("technical_hypothesis") or "Not determined. This is not a confirmed root cause.",
+        "",
+        "## Retest history",
+        "",
+        retest_table(bug.get("retest_history") or []),
+        "",
+    ]
+    (bug_dir / "BUG-REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def bug_report(args) -> None:
+    ensure_docs_dirs()
+    execution_id = args.execution
+    scenario_id = args.scenario
+    exec_dir = DOCS_EXECUTIONS / execution_id
+    dirname = scenario_dir_name(scenario_id)
+    result_path = exec_dir / "scenarios" / dirname / "result.json"
+    result = load(result_path)
+    if result is None:
+        raise SystemExit(
+            f"Scenario '{scenario_id}' has no exported result in execution '{execution_id}'. "
+            "Run 'qa-cli execution-finish' first."
+        )
+    execution = load(exec_dir / "execution.json") or {}
+    bug_id = args.id or (
+        f"BUG-{dt.datetime.now().strftime('%Y%m%d%H%M%S')}-"
+        f"{hashlib.sha1((scenario_id + now()).encode()).hexdigest()[:5]}"
+    )
+    severity = normalize_severity(args.severity) if args.severity else None
+    bug = {
+        "bug_id": bug_id,
+        "requirement_id": result.get("requirement_id") or "NOT_AVAILABLE",
+        "scenario_id": scenario_id,
+        "execution_id": execution_id,
+        "commit": execution.get("commit", "NOT_AVAILABLE"),
+        "environment": execution.get("base_url", "NOT_AVAILABLE"),
+        "classification": args.classification,
+        "severity": severity,
+        "summary": args.summary,
+        "observed_fact": args.observed_fact,
+        "technical_hypothesis": args.hypothesis,
+        "evidence": result.get("evidence") or [],
+        "created_at": now(),
+        "retest_history": [],
+    }
+    bug_dir = DOCS_BUGS / bug_id
+    save(bug_dir / "bug.json", bug)
+    write_bug_report(bug_dir, bug)
+    result["bug_id"] = bug_id
+    save(result_path, result)
+    print(bug_id)
+
+
+def retest(args) -> int:
+    bug_id = args.bug
+    bug_path = DOCS_BUGS / bug_id / "bug.json"
+    bug = load(bug_path)
+    if bug is None:
+        raise SystemExit(f"Bug '{bug_id}' not found. Run 'qa-cli bug-report' first.")
+    entry = {"execution_id": args.execution, "result": args.result, "tested_at": now()}
+    bug.setdefault("retest_history", []).append(entry)
+    save(bug_path, bug)
+    write_bug_report(DOCS_BUGS / bug_id, bug)
+    print(f"retest recorded for {bug_id}: {args.result} ({args.execution})")
+    return 0
+
+
+def bug_is_retested(bug: dict) -> bool:
+    history = bug.get("retest_history") or []
+    return bool(history and history[-1].get("result") == "PASS")
+
+
+def bugs_list(args) -> int:
+    rows = []
+    if DOCS_BUGS.exists():
+        for d in sorted(DOCS_BUGS.iterdir()):
+            bug = load(d / "bug.json")
+            if not bug:
+                continue
+            history = bug.get("retest_history") or []
+            latest = history[-1] if history else None
+            status_label = "retested" if bug_is_retested(bug) else "open"
+            if args.status and args.status != status_label:
+                continue
+            if args.classification and bug.get("classification") != args.classification:
+                continue
+            rows.append({
+                "bug_id": bug["bug_id"],
+                "requirement_id": bug.get("requirement_id") or "NOT_AVAILABLE",
+                "scenario_id": bug.get("scenario_id") or "",
+                "classification": bug.get("classification") or "",
+                "severity": bug.get("severity") or "NOT_AVAILABLE",
+                "status": status_label,
+                "latest_retest": f"{latest['result']} ({latest['execution_id']})" if latest else "None",
+            })
+    if args.format == "json":
+        print(json.dumps({"rows": rows, "total": len(rows)}, indent=2, ensure_ascii=False))
+        return 0
+    header = ["Bug ID", "Requirement", "Scenario", "Classification", "Severity", "Status", "Latest retest"]
+    keys = ["bug_id", "requirement_id", "scenario_id", "classification", "severity", "status", "latest_retest"]
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for r in rows:
+        cells = [str(r[k]).replace("|", "\\|") for k in keys]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append(f"Bugs: {len(rows)}")
+    print("\n".join(lines))
+    return 0
+
+
+def write_final_report_md(out_dir: Path, summary: dict) -> None:
+    by_class = summary["bugs_by_classification"]
+    lines = [
+        "# QA EXECUTION REPORT",
+        "",
+        f"Project: {summary['project']}",
+        f"Branch: {summary['branch']}",
+        f"Commit: {summary['commit']}",
+        f"Environment: {summary['environment']}",
+        f"Execution: {summary['execution_id']}",
+        "",
+        f"Requirements evaluated: {summary['requirements_evaluated']}",
+        f"Scenarios executed: {summary['scenarios_executed']}",
+        "",
+        f"PASS: {summary['pass']}",
+        f"FAIL: {summary['fail']}",
+        f"BLOCKED: {summary['blocked']}",
+        f"NOT_EXECUTED: {summary['not_executed']}",
+        "",
+        f"Bugs (PRODUCT_DEFECT): {by_class.get('PRODUCT_DEFECT', 0)}",
+        f"Automation failures (TEST_AUTOMATION_FAILURE): {by_class.get('TEST_AUTOMATION_FAILURE', 0)}",
+        f"Environment failures (ENVIRONMENT_FAILURE): {by_class.get('ENVIRONMENT_FAILURE', 0)}",
+        f"Data failures (TEST_DATA_FAILURE): {by_class.get('TEST_DATA_FAILURE', 0)}",
+        "",
+        f"Overall result: {summary['overall_result']}",
+        "",
+        "| Requirement | Scenarios | PASS | FAIL | BLOCKED | Result |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in summary["requirements"]:
+        lines.append(
+            f"| {r['requirement_id']} | {r['scenarios']} | {r['pass']} | {r['fail']} | "
+            f"{r['blocked']} | {r['result']} |"
+        )
+    (out_dir / "FINAL-REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_evidence_manifest(out_dir: Path, execution_id: str, all_results: list[dict]) -> None:
+    manifest = [
+        {
+            "requirement_id": r.get("requirement_id") or "NOT_AVAILABLE",
+            "scenario_id": r["scenario_id"],
+            "test_id": r["scenario_id"],
+            "execution_id": execution_id,
+            "status": r.get("status", "NOT_EXECUTED"),
+            "evidence": r.get("evidence") or [],
+            "bug_id": r.get("bug_id"),
+        }
+        for r in all_results
+    ]
+    save(out_dir / "evidence-manifest.json", manifest)
+
+
+OVERALL_RANK = {"ACCEPTED": 0, "INCOMPLETE": 1, "BLOCKED": 2, "NOT_ACCEPTED": 3}
+
+
+def final_report(args) -> int:
+    ensure_docs_dirs()
+    execution_id = args.execution
+    execution = load(DOCS_EXECUTIONS / execution_id / "execution.json")
+    if execution is None:
+        raise SystemExit(f"Execution '{execution_id}' not found.")
+    if not execution.get("finished_at"):
+        raise SystemExit(
+            f"Execution '{execution_id}' has not been finished yet. Run 'qa-cli execution-finish "
+            f"--execution {execution_id}' first."
+        )
+    all_results = iter_exported_results(execution_id)
+    requirement_ids = sorted({
+        r["requirement_id"] for r in all_results
+        if r.get("requirement_id") and r["requirement_id"] != "NOT_AVAILABLE"
+    })
+
+    req_rows = []
+    overall = "ACCEPTED"
+    for rid in requirement_ids:
+        matched = [r for r in all_results if r.get("requirement_id") == rid]
+        report = compute_acceptance(rid, execution_id, execution, matched)
+        write_requirement_report(rid, report)
+        req_rows.append({
+            "requirement_id": rid,
+            "scenarios": report["total_scenarios"],
+            "pass": report["pass"],
+            "fail": report["fail"],
+            "blocked": report["blocked"],
+            "result": report["result"],
+        })
+        if OVERALL_RANK[report["result"]] > OVERALL_RANK[overall]:
+            overall = report["result"]
+
+    status_counts = {s: 0 for s in EXPORT_STATUSES}
+    for r in all_results:
+        status_counts[r.get("status", "NOT_EXECUTED")] = status_counts.get(r.get("status", "NOT_EXECUTED"), 0) + 1
+
+    bug_ids = sorted({r["bug_id"] for r in all_results if r.get("bug_id")})
+    bugs_by_class: dict[str, int] = {}
+    for bid in bug_ids:
+        bug = load(DOCS_BUGS / bid / "bug.json")
+        cls = (bug or {}).get("classification", "UNKNOWN")
+        bugs_by_class[cls] = bugs_by_class.get(cls, 0) + 1
+
+    summary = {
+        "execution_id": execution_id,
+        "project": execution.get("project"),
+        "branch": execution.get("branch"),
+        "commit": execution.get("commit"),
+        "environment": execution.get("base_url"),
+        "requirements_evaluated": len(requirement_ids),
+        "scenarios_executed": len(all_results),
+        "pass": status_counts.get("PASS", 0),
+        "fail": status_counts.get("FAIL", 0),
+        "blocked": status_counts.get("BLOCKED", 0),
+        "not_executed": status_counts.get("NOT_EXECUTED", 0),
+        "bugs_by_classification": bugs_by_class,
+        "overall_result": overall,
+        "requirements": req_rows,
+    }
+    out_dir = DOCS_SUMMARY / execution_id
+    save(out_dir / "summary.json", summary)
+    write_final_report_md(out_dir, summary)
+    write_evidence_manifest(out_dir, execution_id, all_results)
+    print(f"final report: {execution_id} overall={overall}")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Claude Code QA coverage state CLI")
     sp = p.add_subparsers(dest="cmd", required=True)
@@ -969,6 +1806,52 @@ def parser() -> argparse.ArgumentParser:
     q = sp.add_parser("finish", help="close the audit run")
     q.add_argument("--force", action="store_true")
     q.set_defaults(fn=finish)
+
+    q = sp.add_parser("execution-start", help="start a new, immutable docs/qa execution")
+    q.add_argument("--environment", action="append", help="KEY=VALUE, repeatable")
+    q.add_argument("--base-url")
+    q.add_argument("--executor")
+    q.add_argument("--test-framework")
+    q.add_argument("--browser")
+    q.add_argument("--browser-version")
+    q.set_defaults(fn=execution_start)
+
+    q = sp.add_parser("execution-finish", help="export every scenario result into docs/qa and close the execution")
+    q.add_argument("--execution", required=True)
+    q.add_argument("--status", choices=["COMPLETED", "ABORTED"], default="COMPLETED")
+    q.set_defaults(fn=execution_finish)
+
+    q = sp.add_parser("requirement-report", help="compute the deterministic acceptance result for one requirement")
+    q.add_argument("requirement_id")
+    q.add_argument("--execution", required=True)
+    q.set_defaults(fn=requirement_report)
+
+    q = sp.add_parser("bug-report", help="record a bug tied to one exported scenario result")
+    q.add_argument("--scenario", required=True)
+    q.add_argument("--execution", required=True)
+    q.add_argument("--classification", required=True, choices=BUG_CLASSIFICATIONS)
+    q.add_argument("--summary", required=True)
+    q.add_argument("--observed-fact", required=True)
+    q.add_argument("--hypothesis")
+    q.add_argument("--severity", help="critical|high|medium|low (P0|P1|P2|P3 accepted as aliases)")
+    q.add_argument("--id")
+    q.set_defaults(fn=bug_report)
+
+    q = sp.add_parser("retest", help="append a retest outcome to a bug, without erasing its history")
+    q.add_argument("--bug", required=True)
+    q.add_argument("--execution", required=True)
+    q.add_argument("--result", required=True, choices=["PASS", "FAIL", "BLOCKED"])
+    q.set_defaults(fn=retest)
+
+    q = sp.add_parser("bugs-list", help="list bugs recorded in docs/qa/bugs")
+    q.add_argument("--status", choices=["open", "retested"])
+    q.add_argument("--classification", choices=BUG_CLASSIFICATIONS)
+    q.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    q.set_defaults(fn=bugs_list)
+
+    q = sp.add_parser("final-report", help="aggregate every requirement's acceptance into one execution summary")
+    q.add_argument("--execution", required=True)
+    q.set_defaults(fn=final_report)
     return p
 
 
