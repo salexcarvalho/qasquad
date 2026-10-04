@@ -1,7 +1,7 @@
 # Package Manifest
 
 - QA agents: 20
-- QA skills: 25
+- QA skills: 27
 - Plugin: `plugins/qa-squad`
 - Marketplace: `.claude-plugin/marketplace.json`
 - Browser integration: Playwright MCP

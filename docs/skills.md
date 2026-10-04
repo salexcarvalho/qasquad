@@ -12,6 +12,7 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 | `qa-check-coverage` | Query and strictly validate coverage | none (direct) |
 | `qa-record-finding` | Required pattern for a traceable finding | none (direct) |
 | `qa-coverage-matrix` | Generate the traceability matrix | none (direct) |
+| `qa-bugs` | List bugs recorded under `docs/qa/bugs/` | none (direct) |
 
 ## Orchestration skills
 
@@ -20,8 +21,9 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 | `qa-full-audit` | Run the complete audit | none (main conversation, orchestrates every agent) |
 | `qa-discover-system` | Build the testable universe | `qa-system-discovery` |
 | `qa-gap-analysis` | Find untested items and false 100% | `qa-coverage-auditor` |
-| `qa-final-report` | Final report, gated on coverage | `qa-report-writer` |
+| `qa-final-report` | Final report, gated on coverage, publishes `docs/qa/` | `qa-report-writer` |
 | `qa-generate-e2e` | Regression test generation | `qa-e2e-generator` |
+| `qa-retest` | Re-execute the scenario behind a bug and append to its retest history | `qa-scenario-tester` |
 
 ## Specialist testing skills
 

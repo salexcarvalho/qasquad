@@ -24,4 +24,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" matrix --format markdown --out .qa/re
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" finish
 ```
 
-Additional context: $ARGUMENTS
+Also publish the deterministic package under `docs/qa/` (executions, requirement acceptance
+reports, bugs, evidence and final summary), as `qa-report-writer` now does as part of its own
+procedure.
+
+If `$ARGUMENTS` names a `requirement_id`, treat this as scoped mode: publish or regenerate
+only that requirement's acceptance report instead of every distinct requirement found.
+Otherwise, treat $ARGUMENTS as additional free-form context for the report.
