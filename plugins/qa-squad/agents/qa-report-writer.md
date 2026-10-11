@@ -94,6 +94,9 @@ generate missing requirement reports on its own:
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" requirement-report "<requirement_id>" --execution "$EXEC_ID"
 ```
 
+If `$ARGUMENTS` names a scope (`--story`, `--feature`, `--spec`, `--epic`, `--scope`), the
+execution inherits the active scope; confirm it with `qa-cli scope-show` before starting.
+
 If `$ARGUMENTS` names one specific requirement (scoped mode, for example
 `/qa-squad:qa-final-report US-123`), run `requirement-report` only for that requirement
 instead of discovering every distinct one.
@@ -103,6 +106,42 @@ Finally, generate the published summary:
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" final-report --execution "$EXEC_ID"
 ```
+
+### Evidence and failure artifacts (default ON)
+
+Every run you close ends with two reports, published as Artifacts: the EVIDENCE report
+(verdict, summary, result per criterion, scenario and item, screenshots, trace and video
+paths, logs, coverage matrix, environment) and, only when the scope has a failure or a
+finding, the FAILURE report (error, steps to reproduce, screenshot of the moment, evidence,
+severity, anchors). The execution you just finished carries a `manifest.json` and a
+`scope.json` under `docs/qa/executions/$EXEC_ID/`; the generator reads them, so run it after
+`bug-report` has promoted the failures.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --execution "$EXEC_ID" --scope current \
+  --artifact --out-dir "<scratchpad>/qa-artifacts" --json
+```
+
+Use the session scratchpad directory from your system prompt as `--out-dir` (omit the flag
+when there is none). Then call the Artifact tool once per entry of `publish` in the printed
+JSON, passing its `file_path`, `icon` and `description` as listed (the description is one
+sentence; the title is already inside the file). Republish the same `file_path` to update an
+artifact you already published for this scope. Never write a failure report by hand: when the
+output says no failure report was generated, state that the scope has no failures.
+
+The run is scoped when `docs/qa/executions/$EXEC_ID/scope.json` has a type other than `full`
+(a user story, feature, spec or epic). The reports then list only items tagged with that
+scope, show the pass or fail of each acceptance criterion with its evidence, and carry the
+scope ID in their titles. For an epic or a spec with several stories, also generate and
+publish one pair per story with `--scope <story ID>`: a story's failure never appears in
+another story's report.
+
+Opt out only when `$ARGUMENTS` contains `--no-artifact`, or the project sets
+`QA_SQUAD_NO_ARTIFACT=1` or `artifacts.publish=false` in `.qa/config.json`. Pass
+`--no-artifact` to the generator in that case; it writes standalone HTML into
+`docs/qa/executions/$EXEC_ID/scope-<id>/` and `publish` comes back empty. If the Artifact tool
+is not available to you, say so in your output and give the paths from `publish`; the
+orchestrator publishes them.
 
 Produce the following under `.qa/reports/`:
 
@@ -141,7 +180,8 @@ Clearly separate:
 
 ## Outputs
 
-Reports under `.qa/reports/`, plus the published package under `docs/qa/` (executions,
+Reports under `.qa/reports/`, the Artifact links of the evidence report and (when there are
+failures) the failure report, plus the published package under `docs/qa/` (executions,
 requirement acceptance reports, bugs, evidence and the final summary). `docs/qa/` does not
 replace `.qa/reports/`; the two coexist, operational ledger and published package. Never
 include a password, token, cookie or any other secret. Never claim 100% when `qa-cli

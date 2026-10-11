@@ -1,7 +1,7 @@
 ---
 name: qa-retest
 description: "Re-executes the scenario behind a recorded bug and appends the outcome to its retest history."
-argument-hint: "<bug-id>"
+argument-hint: "<bug-id> [--no-artifact]"
 context: fork
 agent: qa-scenario-tester
 background: false
@@ -29,6 +29,20 @@ Then append this attempt to the bug's retest history, without erasing any prior 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" retest --bug "$ARGUMENTS" --execution "$NEW_EXEC_ID" --result PASS|FAIL|BLOCKED
 ```
+
+Close the retest with the evidence and failure artifacts (default ON, `--no-artifact` opts
+out). The retest execution inherits the scope of the original scenario: set it from the bug's
+`scope_ids` first when it has one (`qa-cli scope-set --scope <story or feature ID>`), then
+generate and publish:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --execution "$NEW_EXEC_ID" --scope current \
+  --artifact --out-dir "<scratchpad>/qa-artifacts" --json
+```
+
+Call the Artifact tool once per entry of `publish` with its `file_path`, `icon` and
+`description`. A retest that passes has no failure report; say so instead of publishing one.
+Run `qa-cli scope-clear` afterwards.
 
 Map the recorded status to the retest result: `passed` -> `PASS`, `failed` -> `FAIL`,
 `blocked` -> `BLOCKED`. A `PASS` here does not by itself flip the requirement back to
