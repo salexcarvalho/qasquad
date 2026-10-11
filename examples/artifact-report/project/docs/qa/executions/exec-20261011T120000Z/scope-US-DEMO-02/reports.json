@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-10-11T23:24:34.017392+00:00",
+  "execution": "exec-20261011T120000Z",
+  "scope": {
+    "type": "story",
+    "id": "US-DEMO-02",
+    "title": "Reset a forgotten password"
+  },
+  "verdict": "PASSED",
+  "counts": {
+    "PASS": 1,
+    "FAIL": 0,
+    "BLOCKED": 0,
+    "NOT_EXECUTED": 0,
+    "NOT_APPLICABLE": 0
+  },
+  "findings": 0,
+  "failures": 0,
+  "message": "No failures in scope US-DEMO-02: no failure report generated.",
+  "language": "en",
+  "files": [
+    {
+      "kind": "evidence",
+      "mode": "artifact",
+      "file_path": "/home/salexcarvalho/Pessoal/claude-code-qa-squad-github/examples/artifact-report/artifacts/qa-evidence-US-DEMO-02.html",
+      "title": "QA Evidence US-DEMO-02",
+      "bytes": 16359,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 1,
+      "icon": "report",
+      "description": "Evidence report for US-DEMO-02: verdict PASSED, 1 passed, 0 failed, 0 blocked, 0 not executed."
+    },
+    {
+      "kind": "evidence",
+      "mode": "standalone",
+      "file_path": "docs/qa/executions/exec-20261011T120000Z/scope-US-DEMO-02/evidence-report.html",
+      "title": "QA Evidence US-DEMO-02",
+      "bytes": 16522,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 1
+    }
+  ]
+}

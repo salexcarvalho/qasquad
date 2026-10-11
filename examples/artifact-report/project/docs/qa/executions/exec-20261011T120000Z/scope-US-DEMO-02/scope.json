@@ -1,0 +1,44 @@
+{
+  "type": "story",
+  "id": "US-DEMO-02",
+  "title": "Reset a forgotten password",
+  "source": "docs/user-stories/demo.md",
+  "line": 23,
+  "narrative": "As a member, I want to reset my password by e-mail so that I can recover access.",
+  "persona": "member",
+  "priority": "Should",
+  "status": "",
+  "parent_id": "DEMO",
+  "acceptance_criteria": [
+    {
+      "title": "Request a reset link",
+      "kind": "gherkin",
+      "steps": [
+        {
+          "keyword": "Given",
+          "type": "given",
+          "text": "a registered e-mail address"
+        },
+        {
+          "keyword": "When",
+          "type": "when",
+          "text": "the member asks for a reset link"
+        },
+        {
+          "keyword": "Then",
+          "type": "then",
+          "text": "a confirmation is shown without revealing whether the address exists"
+        }
+      ],
+      "examples": [],
+      "id": "US-DEMO-02/AC-01",
+      "story_id": "US-DEMO-02"
+    }
+  ],
+  "schema": "qa-squad/scope/1",
+  "children": [],
+  "ids": [
+    "US-DEMO-02",
+    "DEMO"
+  ]
+}

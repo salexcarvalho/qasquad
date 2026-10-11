@@ -1,0 +1,73 @@
+{
+  "type": "story",
+  "id": "US-DEMO-01",
+  "title": "Sign in with e-mail and password",
+  "source": "docs/user-stories/demo.md",
+  "line": 4,
+  "narrative": "As a member, I want to sign in with my e-mail and password so that I can reach my area.",
+  "persona": "member",
+  "priority": "Must",
+  "status": "",
+  "parent_id": "DEMO",
+  "acceptance_criteria": [
+    {
+      "title": "Valid sign in",
+      "kind": "gherkin",
+      "steps": [
+        {
+          "keyword": "Given",
+          "type": "given",
+          "text": "an active member with a correct password"
+        },
+        {
+          "keyword": "When",
+          "type": "when",
+          "text": "the member submits the sign-in form"
+        },
+        {
+          "keyword": "Then",
+          "type": "then",
+          "text": "the member lands on the home page"
+        },
+        {
+          "keyword": "And",
+          "type": "then",
+          "text": "the session cookie is set"
+        }
+      ],
+      "examples": [],
+      "id": "US-DEMO-01/AC-01",
+      "story_id": "US-DEMO-01"
+    },
+    {
+      "title": "Wrong password",
+      "kind": "gherkin",
+      "steps": [
+        {
+          "keyword": "Given",
+          "type": "given",
+          "text": "an active member"
+        },
+        {
+          "keyword": "When",
+          "type": "when",
+          "text": "the member submits a wrong password"
+        },
+        {
+          "keyword": "Then",
+          "type": "then",
+          "text": "the form shows \"Invalid credentials\""
+        }
+      ],
+      "examples": [],
+      "id": "US-DEMO-01/AC-02",
+      "story_id": "US-DEMO-01"
+    }
+  ],
+  "schema": "qa-squad/scope/1",
+  "children": [],
+  "ids": [
+    "US-DEMO-01",
+    "DEMO"
+  ]
+}

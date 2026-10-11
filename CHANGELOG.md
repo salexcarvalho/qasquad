@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented here.
 
+## [0.5.0] - 2026-10-11
+
+### Added
+- Evidence and failure reports as Artifacts, by default. Every run (the full audit, every
+  `qa-test-*` skill, `qa-test-scenarios`, `qa-retest`, `qa-final-report`) now ends by
+  generating an EVIDENCE report (verdict, summary, result per criterion/scenario/item,
+  screenshots, trace and video paths, logs, coverage matrix, environment) and, only when the
+  scope has a failure or a finding, a FAILURE report (error, steps to reproduce, screenshot of
+  the moment, evidence, severity, anchors), and publishing both with the Artifact tool. Before
+  this change, evidence existed only as Markdown and JSON under `docs/qa/` and `.qa/reports/`.
+- `bin/qa_artifact_report.py` (standard library only): `--artifact` emits Artifact fragments
+  (no document tags, 2 to 4 word `<title>`, theme tokens with dark variants, no external
+  resources, images as data URIs, 16 px gutter, overflow containers) plus
+  `artifact-plan.json`; `--standalone` writes complete documents next to the scope's data.
+  12 MB budget with seven degradation levels and a list of what was left out, secret masking,
+  English and `pt-BR`, `--selftest`, `--write-example`, and a page-contract checker.
+- Opt-out: `--no-artifact`, `QA_SQUAD_NO_ARTIFACT=1`, or `artifacts.publish=false` in
+  `.qa/config.json`. `artifacts.language` and `artifacts.budget_mb` are also read from there.
+- Scoped runs: `--story`, `--feature`, `--spec`, `--epic`, `--scope` on the skills, backed by
+  `qa-cli scope-set | scope-tag | scope-show | scope-clear` and the scope schema
+  `qa-squad/scope/1` (`.qa/scope.json`, `docs/qa/executions/<id>/scope.json`). `scope_ids` is
+  stamped on inventory items, results, findings and bugs; results also carry `criterion_id`.
+- `bin/qa_scope.py`: tolerant parser for user-story packs (front matter, `US-...` headings,
+  "As a ... I want ..." narrative, Gherkin with `Scenario Outline`/`Examples`, bullet
+  criteria) with keyword packs per language in `bin/templates/i18n.json` (Portuguese included).
+  Each acceptance criterion becomes one executable scenario carrying the story ID as
+  `requirement_id`; reports show pass or fail per criterion with its evidence.
+- `docs/qa/executions/<id>/manifest.json`, written by `execution-finish` (and refreshed by
+  `bug-report`): in-scope items, findings and bugs. A scoped execution exports only in-scope
+  scenarios. Per-scope folder `scope-<id>/` with `reports.json`.
+- `qa-artifacts` skill (generate and publish the Artifacts of any finished execution), and
+  `qa-cli manifest`.
+- The Stop hook now also blocks a covered, still-active audit until its evidence report was
+  generated (`.qa/artifacts/index.json`), unless artifacts are opted out; it never blocks
+  twice (`stop_hook_active`) and fails open.
+- Tests: `tests/test_artifact_report.py` (scope parsing, scope propagation, full, story with
+  failure, story without failure, isolation, Artifact contract, secrets, budget, opt-out,
+  language, `--selftest`), new hook tests, fixtures under `tests/fixtures/`.
+- `docs/artifacts-and-scope.md`.
+
+### Changed
+- All testing agents gained a "Scope and evidence" section; `qa-scenario-tester` executes the
+  criteria of the scope first; `qa-report-writer`, `qa-orchestrator`, `qa-coverage-auditor`,
+  `qa-full-audit`, `qa-final-report`, `qa-retest` and every `qa-test-*` skill describe the new
+  default and the flags.
+- `qa-cli init` writes an `artifacts` block into `.qa/config.json`.
+
+### Fixed
+- `execution-start` used a one-second ID, so two executions started in the same second shared
+  a folder. A numeric suffix now keeps them apart.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added

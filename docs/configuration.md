@@ -43,6 +43,20 @@ needs (coverage categories, allowed statuses, severity scale) and reads its inpu
 same `.qa/` ledger. See [architecture](architecture.md#qa-versus-docsqa) and
 [usage](usage.md#publishing-docsqa).
 
+## Artifacts
+
+```json
+{
+  "artifacts": { "publish": true, "language": "en", "budget_mb": 12 }
+}
+```
+
+`publish` (default `true`) turns the evidence and failure Artifacts on or off. Opt out per
+run with `--no-artifact`, or for a shell with `QA_SQUAD_NO_ARTIFACT=1`. `language` is `en` or
+`pt-BR` (`QA_SQUAD_REPORT_LANG` overrides it); `budget_mb` caps each page (never above 12).
+`python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --settings` prints the resolved
+values and the reason. See [artifacts-and-scope.md](artifacts-and-scope.md).
+
 ## Project context
 
 `.qa/project-context.md` carries domain knowledge without contaminating the generic agents.
