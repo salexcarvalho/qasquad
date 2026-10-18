@@ -1,0 +1,4 @@
+2026-10-11T12:00:01Z POST /api/login 401
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+password=hunter2secret
+expected redirect to /home but stayed on /login

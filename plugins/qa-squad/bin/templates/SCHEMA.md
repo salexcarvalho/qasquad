@@ -120,6 +120,13 @@ impact, recommendation and evidence.
 Severity is `critical`, `high`, `medium` or `low`. The `P0` to `P3` scale is accepted as an
 alias and stored alongside as `severity_code`.
 
+## Scope tags
+
+When a run is scoped (`qa-cli scope-set`), inventory items carry `metadata.scope_ids`, and
+results and findings carry `scope_ids`, for example `["US-A01-03", "A01"]`. Results may also
+carry `criterion_id` (an acceptance criterion such as `US-A01-03/AC-02`), and findings
+`criterion_id` and `scenario_id`. Nothing is added when no scope is active.
+
 ## Evidence
 
 Use paths under:

@@ -6,6 +6,8 @@ reports/
 evidence/
 inventory/
 hook-state.json
+scope.json
+artifacts/
 
 # Keep base documentation/config
 !.gitignore

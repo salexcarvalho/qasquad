@@ -65,6 +65,26 @@ and the findings already recorded.
 
 ## Procedure
 
+### 0. Scope
+
+When the task names a user story, feature, spec or epic (`--story`, `--feature`, `--spec`,
+`--epic`, `--scope`, or a story or story file described in plain words), restrict everything
+below to it and set it first, before detecting anything:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-set --story <ID>   # or --feature / --spec / --epic / --scope
+```
+
+For a story, epic or spec, `scope-set` reads the acceptance criteria from the document
+(Gherkin with Given/When/Then keywords in English or in the languages of `templates/i18n.json`,
+or a bullet list) and registers one executable scenario per criterion, tagged with the scope
+and with `requirement_id` set to the story ID. Execute those scenarios exactly as written,
+one result each; the criterion ID is attached automatically, so the report shows pass or
+fail per criterion with its evidence. Scenarios outside the scope (existing or generated) are
+executed only when tagged with it. A story that is not found is reported as such; never
+invent its criteria. With no scope given, run `scope-clear` and work on the whole project as
+before.
+
 ### 1. Detect
 
 Always start with the deterministic scan. Never decide from memory or from a quick glance at
@@ -149,7 +169,10 @@ Execute every scenario in the inventory that has no result yet:
 - `gherkin`, `documented` and `generated`: execute the steps in the real application through
   the Playwright MCP, as the scenario's role, and compare against the expected result.
 
-Record one result per scenario ID, with evidence:
+Capture a screenshot at each decisive step and one at the moment of any failure (named
+`...-failure.png`), and keep console and network excerpts of a failing step as `.log` files;
+they are embedded in the published failure report. Record one result per scenario ID, with
+evidence:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" record --category scenarios --id "<scenario id>" \
@@ -206,6 +229,21 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-list --out .qa/reports/test-
 - `.qa/reports/test-scenarios.md`;
 - a short summary stating whether scenarios already existed, how many were imported, how many
   were generated, and the pass, fail and blocked counts.
+
+## Scope and evidence
+
+Check the active scope with `python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-show`. When it is
+not `full`, test only the inventory items tagged with that scope (`metadata.scope_ids`), and
+never report an item of another scope. `qa-cli record`, `finding` and `inventory-add` stamp the
+active scope on what you persist. Pass `--scope-id <ID>` explicitly only to attribute work to
+a scope other than the active one, and `--criterion-id <ID>` when a result proves or disproves
+one acceptance criterion.
+
+Name every screenshot, trace, log or console excerpt you keep so it can be tied to what it
+proves, as `<scope-or-item-slug>-<step>.png`, and name the screenshot taken at the moment of a
+failure `<...>-failure.png`. Store it under `.qa/evidence/` and pass it with `--evidence`. The
+published reports show only what was recorded: a failure without a screenshot of the moment is
+reported as having none, so take it.
 
 ## Escalation
 

@@ -13,6 +13,7 @@ SUITES = [
     ("english-only gate", ROOT / "scripts" / "check_english_only.py"),
     ("qa-cli behavior", TESTS_DIR / "test_qa_cli.py"),
     ("hooks behavior", TESTS_DIR / "test_hooks.py"),
+    ("artifact reports and scopes", TESTS_DIR / "test_artifact_report.py"),
     ("english gate behavior", TESTS_DIR / "test_english_gate.py"),
 ]
 

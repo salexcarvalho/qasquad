@@ -1,0 +1,22 @@
+{
+  "execution_id": "exec-20261011T120000Z",
+  "project": "demo-app",
+  "branch": "main",
+  "commit": "0123abc",
+  "environment": {
+    "stage": "local"
+  },
+  "base_url": "http://localhost:3000",
+  "started_at": "2026-10-11T12:00:00+00:00",
+  "finished_at": "2026-10-11T12:01:00+00:00",
+  "executor": "claude",
+  "test_framework": "playwright",
+  "browser": "chromium",
+  "browser_version": "128",
+  "status": "COMPLETED",
+  "scope": {
+    "type": "epic",
+    "id": "DEMO",
+    "title": "Account access"
+  }
+}

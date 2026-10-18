@@ -75,6 +75,15 @@ confirmed as a product defect yet. A failure's cause is always one of six catego
 `covers`/`preconditions`/`steps`/`expected` fields. When it is absent, anything that depends
 on it reports the literal `NOT_AVAILABLE` rather than a guess.
 
+## Scopes and artifacts
+
+A run can be tied to a user story, feature, spec or epic (`qa-cli scope-set`). The scope is
+stamped as `scope_ids` on inventory items, results, findings and bugs, snapshotted into
+`docs/qa/executions/<id>/scope.json` and `manifest.json` when the execution finishes, and used
+by `qa_artifact_report.py` to render the evidence and failure reports of exactly that scope.
+The manifest is the generator's only input besides the evidence files it points at, so the
+report is reproducible from the package alone. See [artifacts-and-scope.md](artifacts-and-scope.md).
+
 ## Coverage categories
 
 Core categories gate completion by default:

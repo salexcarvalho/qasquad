@@ -1,7 +1,7 @@
 ---
 name: qa-full-audit
 description: "Runs a complete, generic, traceable QA audit driven towards the configured coverage target."
-argument-hint: "[audit goal and requirements]"
+argument-hint: "[--story ID | --feature NAME | --spec PATH | --epic ID | --scope VALUE] [--no-artifact] [audit goal and requirements]"
 disable-model-invocation: true
 ---
 
@@ -28,10 +28,29 @@ The CLI is not on `PATH`:
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" <command>
 ```
 
+## Scope and flags
+
+If the arguments carry `--story <ID>`, `--feature <name>`, `--spec <path>`, `--epic <ID>` or
+`--scope <value>` (or name a user story or story file in plain words), the whole audit is
+restricted to it. Set it before anything else and tell every agent you start which scope is
+active:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-set --story <ID>   # or --feature / --spec / --epic / --scope
+```
+
+`scope-set` imports the acceptance criteria of a story, epic or spec as scenarios tagged with
+the scope. Results, findings, evidence, reports and Artifacts then stay inside that scope.
+Without scope flags run `qa-cli scope-clear` first; the run is the full audit and its
+reports keep the current full-scope behavior.
+
+`--no-artifact` opts out of publishing the final Artifacts (also `QA_SQUAD_NO_ARTIFACT=1` or
+`artifacts.publish=false` in `.qa/config.json`). Publishing is ON by default.
+
 ## Sequence
 
 1. Initialize or resume the run if `.qa/run-state.json` does not exist:
-   `qa-cli init --goal "Full generic QA audit"`.
+   `qa-cli init --goal "Full generic QA audit"`. Apply the scope above.
 2. Read the goal above and `.qa/project-context.md` when present.
 3. Delegate discovery to `qa-squad:qa-system-discovery`. Do not start mass testing before the
    inventory is sufficient to measure coverage.
@@ -46,7 +65,14 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" <command>
 7. Ask `qa-squad:qa-coverage-auditor` for an independent review before the final report.
 8. Delegate regression tests to `qa-squad:qa-e2e-generator` once the critical flows are
    understood.
-9. Close with `qa-squad:qa-report-writer` only when `qa-cli validate` passes.
+9. Close with `qa-squad:qa-report-writer` only when `qa-cli validate` passes. It opens and
+   closes the `docs/qa/` execution, then generates the EVIDENCE report (verdict, per
+   criterion/scenario/item results, screenshots, traces, logs, coverage, environment) and,
+   only if the scope has a failure or finding, the FAILURE report, and publishes both with the
+   Artifact tool. Confirm in its output that the links exist. If it could not publish, you
+   publish the entries of `.qa/artifacts/<execution>/artifact-plan.json` yourself: call the
+   Artifact tool with each entry's `file_path`, `icon` and `description`. Give the user every
+   Artifact link, or say the scope has no failures. Run `qa-cli scope-clear` after a scoped run.
 
 If the goal requires 100% of menus and submenus per role, discovery must inventory navigation
 per role: the same route seen by two roles is two items.
@@ -76,4 +102,6 @@ per role: the same route seen by two roles is two items.
 | reporting | `qa-squad:qa-report-writer` | n/a |
 
 While `.qa/run-state.json` is active, the Stop hook blocks the end of the turn until
-`qa-cli validate` passes, and returns the missing items. Treat that list as the next wave.
+`qa-cli validate` passes, and returns the missing items. Treat that list as the next wave. Once
+coverage passes, it also blocks until the evidence report has been generated for the run (an
+entry in `.qa/artifacts/index.json`), unless artifacts are opted out.

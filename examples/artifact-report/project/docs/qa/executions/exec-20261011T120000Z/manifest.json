@@ -1,0 +1,422 @@
+{
+  "schema": "qa-squad/manifest/1",
+  "generated_at": "2026-10-11T12:01:00+00:00",
+  "execution": {
+    "execution_id": "exec-20261011T120000Z",
+    "project": "demo-app",
+    "branch": "main",
+    "commit": "0123abc",
+    "environment": {
+      "stage": "local"
+    },
+    "base_url": "http://localhost:3000",
+    "started_at": "2026-10-11T12:00:00+00:00",
+    "finished_at": "2026-10-11T12:01:00+00:00",
+    "executor": "claude",
+    "test_framework": "playwright",
+    "browser": "chromium",
+    "browser_version": "128",
+    "status": "COMPLETED",
+    "scope": {
+      "type": "epic",
+      "id": "DEMO",
+      "title": "Account access"
+    }
+  },
+  "scope": {
+    "type": "epic",
+    "id": "DEMO",
+    "title": "Account access",
+    "source": "docs/user-stories/demo.md",
+    "children": [
+      {
+        "type": "story",
+        "id": "US-DEMO-01",
+        "title": "Sign in with e-mail and password",
+        "source": "docs/user-stories/demo.md",
+        "line": 4,
+        "narrative": "As a member, I want to sign in with my e-mail and password so that I can reach my area.",
+        "persona": "member",
+        "priority": "Must",
+        "status": "",
+        "parent_id": "DEMO",
+        "acceptance_criteria": [
+          {
+            "title": "Valid sign in",
+            "kind": "gherkin",
+            "steps": [
+              {
+                "keyword": "Given",
+                "type": "given",
+                "text": "an active member with a correct password"
+              },
+              {
+                "keyword": "When",
+                "type": "when",
+                "text": "the member submits the sign-in form"
+              },
+              {
+                "keyword": "Then",
+                "type": "then",
+                "text": "the member lands on the home page"
+              },
+              {
+                "keyword": "And",
+                "type": "then",
+                "text": "the session cookie is set"
+              }
+            ],
+            "examples": [],
+            "id": "US-DEMO-01/AC-01",
+            "story_id": "US-DEMO-01"
+          },
+          {
+            "title": "Wrong password",
+            "kind": "gherkin",
+            "steps": [
+              {
+                "keyword": "Given",
+                "type": "given",
+                "text": "an active member"
+              },
+              {
+                "keyword": "When",
+                "type": "when",
+                "text": "the member submits a wrong password"
+              },
+              {
+                "keyword": "Then",
+                "type": "then",
+                "text": "the form shows \"Invalid credentials\""
+              }
+            ],
+            "examples": [],
+            "id": "US-DEMO-01/AC-02",
+            "story_id": "US-DEMO-01"
+          }
+        ],
+        "schema": "qa-squad/scope/1",
+        "children": [],
+        "ids": [
+          "US-DEMO-01",
+          "DEMO"
+        ]
+      },
+      {
+        "type": "story",
+        "id": "US-DEMO-02",
+        "title": "Reset a forgotten password",
+        "source": "docs/user-stories/demo.md",
+        "line": 23,
+        "narrative": "As a member, I want to reset my password by e-mail so that I can recover access.",
+        "persona": "member",
+        "priority": "Should",
+        "status": "",
+        "parent_id": "DEMO",
+        "acceptance_criteria": [
+          {
+            "title": "Request a reset link",
+            "kind": "gherkin",
+            "steps": [
+              {
+                "keyword": "Given",
+                "type": "given",
+                "text": "a registered e-mail address"
+              },
+              {
+                "keyword": "When",
+                "type": "when",
+                "text": "the member asks for a reset link"
+              },
+              {
+                "keyword": "Then",
+                "type": "then",
+                "text": "a confirmation is shown without revealing whether the address exists"
+              }
+            ],
+            "examples": [],
+            "id": "US-DEMO-02/AC-01",
+            "story_id": "US-DEMO-02"
+          }
+        ],
+        "schema": "qa-squad/scope/1",
+        "children": [],
+        "ids": [
+          "US-DEMO-02",
+          "DEMO"
+        ]
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "title": "Valid sign in",
+        "kind": "gherkin",
+        "steps": [
+          {
+            "keyword": "Given",
+            "type": "given",
+            "text": "an active member with a correct password"
+          },
+          {
+            "keyword": "When",
+            "type": "when",
+            "text": "the member submits the sign-in form"
+          },
+          {
+            "keyword": "Then",
+            "type": "then",
+            "text": "the member lands on the home page"
+          },
+          {
+            "keyword": "And",
+            "type": "then",
+            "text": "the session cookie is set"
+          }
+        ],
+        "examples": [],
+        "id": "US-DEMO-01/AC-01",
+        "story_id": "US-DEMO-01"
+      },
+      {
+        "title": "Wrong password",
+        "kind": "gherkin",
+        "steps": [
+          {
+            "keyword": "Given",
+            "type": "given",
+            "text": "an active member"
+          },
+          {
+            "keyword": "When",
+            "type": "when",
+            "text": "the member submits a wrong password"
+          },
+          {
+            "keyword": "Then",
+            "type": "then",
+            "text": "the form shows \"Invalid credentials\""
+          }
+        ],
+        "examples": [],
+        "id": "US-DEMO-01/AC-02",
+        "story_id": "US-DEMO-01"
+      },
+      {
+        "title": "Request a reset link",
+        "kind": "gherkin",
+        "steps": [
+          {
+            "keyword": "Given",
+            "type": "given",
+            "text": "a registered e-mail address"
+          },
+          {
+            "keyword": "When",
+            "type": "when",
+            "text": "the member asks for a reset link"
+          },
+          {
+            "keyword": "Then",
+            "type": "then",
+            "text": "a confirmation is shown without revealing whether the address exists"
+          }
+        ],
+        "examples": [],
+        "id": "US-DEMO-02/AC-01",
+        "story_id": "US-DEMO-02"
+      }
+    ],
+    "schema": "qa-squad/scope/1",
+    "parent_id": "",
+    "narrative": "",
+    "ids": [
+      "DEMO"
+    ]
+  },
+  "items": [
+    {
+      "id": "scenario:criterion:US-DEMO-01/AC-01",
+      "category": "scenarios",
+      "kind": "gherkin",
+      "label": "Valid sign in",
+      "status": "FAIL",
+      "profile_id": "member",
+      "route": "/login",
+      "scope_ids": [
+        "US-DEMO-01",
+        "DEMO"
+      ],
+      "requirement_id": "US-DEMO-01",
+      "criterion_id": "US-DEMO-01/AC-01",
+      "origin": "acceptance-criterion",
+      "source": "docs/user-stories/demo.md",
+      "preconditions": "an active member with a correct password",
+      "steps": [
+        "the member submits the sign-in form"
+      ],
+      "steps_gherkin": [
+        "Given an active member with a correct password",
+        "When the member submits the sign-in form",
+        "Then the member lands on the home page",
+        "And the session cookie is set"
+      ],
+      "expected": "the member lands on the home page; the session cookie is set",
+      "actual": "After submitting valid credentials the page stayed on /login and showed a spinner; the API answered 401.",
+      "evidence": [
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/step-1.png",
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/failure-moment.png",
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/console.log",
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/trace.zip"
+      ],
+      "finding_ids": [
+        "QA-F1"
+      ],
+      "bug_id": "BUG-1",
+      "tested_at": "2026-10-11T12:00:30+00:00",
+      "tester": "claude",
+      "orphan": false
+    },
+    {
+      "id": "scenario:criterion:US-DEMO-01/AC-02",
+      "category": "scenarios",
+      "kind": "gherkin",
+      "label": "Wrong password",
+      "status": "PASS",
+      "profile_id": "member",
+      "route": "/login",
+      "scope_ids": [
+        "US-DEMO-01",
+        "DEMO"
+      ],
+      "requirement_id": "US-DEMO-01",
+      "criterion_id": "US-DEMO-01/AC-02",
+      "origin": "acceptance-criterion",
+      "source": "docs/user-stories/demo.md",
+      "preconditions": "an active member",
+      "steps": [
+        "the member submits a wrong password"
+      ],
+      "steps_gherkin": [
+        "Given an active member",
+        "When the member submits a wrong password",
+        "Then the form shows \"Invalid credentials\""
+      ],
+      "expected": "the form shows \"Invalid credentials\"",
+      "actual": "The form showed the message Invalid credentials.",
+      "evidence": [
+        "docs/qa/evidence/exec-20261011T120000Z/wrong/final.png"
+      ],
+      "finding_ids": [],
+      "bug_id": null,
+      "tested_at": "2026-10-11T12:00:30+00:00",
+      "tester": "claude",
+      "orphan": false
+    },
+    {
+      "id": "scenario:criterion:US-DEMO-02/AC-01",
+      "category": "scenarios",
+      "kind": "gherkin",
+      "label": "Request a reset link",
+      "status": "PASS",
+      "profile_id": "member",
+      "route": "/login",
+      "scope_ids": [
+        "US-DEMO-02",
+        "DEMO"
+      ],
+      "requirement_id": "US-DEMO-02",
+      "criterion_id": "US-DEMO-02/AC-01",
+      "origin": "acceptance-criterion",
+      "source": "docs/user-stories/demo.md",
+      "preconditions": "a registered e-mail address",
+      "steps": [
+        "the member asks for a reset link"
+      ],
+      "steps_gherkin": [
+        "Given a registered e-mail address",
+        "When the member asks for a reset link",
+        "Then a confirmation is shown without revealing whether the address exists"
+      ],
+      "expected": "a confirmation is shown without revealing whether the address exists",
+      "actual": "A neutral confirmation was shown for known and unknown addresses.",
+      "evidence": [
+        "docs/qa/evidence/exec-20261011T120000Z/reset/final.png"
+      ],
+      "finding_ids": [],
+      "bug_id": null,
+      "tested_at": "2026-10-11T12:00:30+00:00",
+      "tester": "claude",
+      "orphan": false
+    },
+    {
+      "id": "navigation:/login",
+      "category": "navigation",
+      "kind": "page",
+      "label": "Login page",
+      "status": "PASS",
+      "profile_id": "member",
+      "route": "/login",
+      "scope_ids": [
+        "US-DEMO-01",
+        "DEMO"
+      ],
+      "requirement_id": "NOT_AVAILABLE",
+      "criterion_id": null,
+      "steps": [],
+      "steps_gherkin": [],
+      "expected": "",
+      "actual": "Page loads",
+      "evidence": [],
+      "finding_ids": [],
+      "bug_id": null,
+      "tested_at": "2026-10-11T12:00:10+00:00",
+      "tester": "claude",
+      "orphan": false,
+      "preconditions": ""
+    }
+  ],
+  "findings": [
+    {
+      "id": "QA-F1",
+      "title": "Valid sign in is rejected with 401",
+      "severity": "high",
+      "category": "scenarios",
+      "scope_ids": [
+        "US-DEMO-01",
+        "DEMO"
+      ],
+      "criterion_id": "US-DEMO-01/AC-01",
+      "scenario_id": "scenario:criterion:US-DEMO-01/AC-01",
+      "location": "/login",
+      "actual": "401 on POST /api/login with valid credentials",
+      "expected": "Redirect to /home",
+      "reproduction": "1. Open /login\n2. Fill valid e-mail and password\n3. Submit",
+      "impact": "No member can sign in.",
+      "recommendation": "Check the credential hash comparison.",
+      "evidence": [
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/failure-moment.png"
+      ]
+    }
+  ],
+  "bugs": [
+    {
+      "bug_id": "BUG-1",
+      "scenario_id": "scenario:criterion:US-DEMO-01/AC-01",
+      "requirement_id": "US-DEMO-01",
+      "classification": "PRODUCT_DEFECT",
+      "severity": "high",
+      "summary": "Valid credentials rejected",
+      "observed_fact": "POST /api/login answered 401 for valid credentials.",
+      "technical_hypothesis": "The password hash comparison may use the wrong salt.",
+      "evidence": [
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/step-1.png",
+        "docs/qa/evidence/exec-20261011T120000Z/sign-in/failure-moment.png"
+      ],
+      "retest_history": [],
+      "scope_ids": [
+        "US-DEMO-01",
+        "DEMO"
+      ]
+    }
+  ]
+}

@@ -64,7 +64,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" validate
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" finish
 ```
 
-The final report is produced only after validation passes.
+The final report is produced only after validation passes. It is followed by the evidence
+report and, when there are failures, the failure report, published as Artifacts
+([artifacts-and-scope.md](artifacts-and-scope.md)).
 
 ## Evidence requirements
 

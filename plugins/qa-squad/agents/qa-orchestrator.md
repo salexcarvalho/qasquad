@@ -68,9 +68,25 @@ specialized passes yourself.
 - `.qa/project-context.md` when it exists;
 - the persisted state under `.qa/`.
 
+## Scope and flags
+
+The goal may be tied to something: `--story <ID>`, `--feature <name>`, `--spec <path>`,
+`--epic <ID>`, `--scope <value>`, or a user story or story file described in plain words.
+Set it before delegating anything, and pass the scope to every agent you start:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-set --story <ID>   # or --feature / --spec / --epic / --scope
+```
+
+A scoped run tests, records, reports and publishes only what belongs to the scope; the
+coverage gate still applies to the categories the scope touches. With no scope flag, run
+`qa-cli scope-clear` so a stale scope cannot tag the audit. `--no-artifact` opts out of
+publishing the final Artifacts (the documented variable is `QA_SQUAD_NO_ARTIFACT=1`, or
+`artifacts.publish=false` in `.qa/config.json`); publishing is ON by default.
+
 ## Required sequence
 
-1. Initialize `.qa/` if it does not exist yet.
+1. Initialize `.qa/` if it does not exist yet, and apply the scope above.
 2. Read the audit goal and `.qa/project-context.md` when present.
 3. Delegate discovery to `qa-system-discovery`.
 4. Do not start the mass testing phase before the inventory is sufficient to measure coverage.
@@ -86,6 +102,11 @@ specialized passes yourself.
 11. Close with `qa-report-writer` and `qa-cli finish` only when the coverage criteria are
     met. Publishing the deterministic `docs/qa/` evidence package happens inside this step,
     as part of `qa-report-writer`'s own procedure; it is not a separate delegation.
+12. Make sure the evidence report, and the failure report when the scope has failures, were
+    published as Artifacts (default). `qa-report-writer` generates and publishes them; check
+    its output for the links or `.qa/artifacts/index.json` for the generated files, and
+    publish the entries of the plan yourself with the Artifact tool when it could not.
+    Give the user every Artifact link, or say that the scope has no failures.
 
 ## Navigation coverage
 
@@ -118,8 +139,9 @@ navigation per role. The same route exposed to two different roles is two distin
 
 ## Outputs
 
-A complete `.qa/` ledger, a coverage state that satisfies the configured threshold, and a
-final report produced by `qa-report-writer`.
+A complete `.qa/` ledger, a coverage state that satisfies the configured threshold, a
+final report produced by `qa-report-writer`, and the published evidence (and failure)
+Artifacts of the scope.
 
 Never declare completion based only on subagent summaries. Validate the persisted state.
 

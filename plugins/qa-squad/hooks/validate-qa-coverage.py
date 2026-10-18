@@ -46,7 +46,37 @@ except (subprocess.SubprocessError, json.JSONDecodeError, ValueError, OSError) a
     print(f"qa-squad: could not read coverage state ({exc}); skipping gate.", file=sys.stderr)
     sys.exit(0)
 
+def artifacts_pending() -> bool:
+    """True when the run is covered but its evidence and failure reports were never generated.
+
+    Fail-open and loop-safe: any problem reading settings or the index means "nothing pending",
+    and a hook that already blocked once (`stop_hook_active`) never blocks again.
+    """
+    if hook_input.get("stop_hook_active"):
+        return False
+    try:
+        sys.path.insert(0, str(plugin_root / "bin"))
+        import qa_scope
+        if not qa_scope.artifact_settings(root)["publish"]:
+            return False
+        history = json.loads((root / ".qa" / "artifacts" / "index.json").read_text(encoding="utf-8"))
+        started = str(state.get("started_at") or "")
+        return not any(str(h.get("generated_at") or "") >= started for h in history)
+    except FileNotFoundError:
+        return True
+    except Exception:  # noqa: BLE001 - fail open
+        return False
+
+
 if data.get("complete"):
+    if artifacts_pending():
+        print(json.dumps({"decision": "block", "reason": (
+            "QA COVERAGE COMPLETE, BUT NO EVIDENCE OR FAILURE REPORT WAS GENERATED. Generate the "
+            "reports with 'qa_artifact_report.py --execution <id> --artifact --out-dir <scratchpad>' "
+            "and publish each file listed in its artifact-plan.json with the Artifact tool, then "
+            "close the run with 'qa-cli finish'. To opt out, set QA_SQUAD_NO_ARTIFACT=1 or "
+            "artifacts.publish=false in .qa/config.json."
+        )}, ensure_ascii=False))
     sys.exit(0)
 
 parts = []
