@@ -28,6 +28,20 @@ The script verifies that the `claude` CLI is present, registers the local direct
 marketplace and installs the plugin at user scope. Restart Claude Code, or run
 `/reload-plugins`, afterwards.
 
+## Updating an installed copy
+
+An installed copy is a snapshot: it does not change when this repository does. Refresh the
+marketplace, update the plugin, and restart Claude Code (or run `/reload-plugins`):
+
+```bash
+claude plugin marketplace update salexcarvalho-claude-plugins
+claude plugin update qa-squad@salexcarvalho-claude-plugins
+```
+
+`./install-local-global.sh` can be run again from a clone for a local-directory marketplace.
+The update is picked up only when the plugin version changes, which is why each behavior
+change bumps `version` in `plugin.json` and `marketplace.json`.
+
 ## Local development
 
 ```bash

@@ -185,6 +185,45 @@ try:
 except (json.JSONDecodeError, OSError):
     pass  # already reported above
 
+# ------------------------------------------------------- artifacts and scope wiring
+# Every run must end with the evidence/failure artifacts, so the entry points that close a run
+# have to say so, and the generator and its helpers have to ship with the plugin.
+for helper in ["qa_artifact_report.py", "qa_scope.py"]:
+    if not (PLUGIN / "bin" / helper).exists():
+        errors.append(f"Missing plugins/qa-squad/bin/{helper}")
+if not (PLUGIN / "bin" / "templates" / "i18n.json").exists():
+    errors.append("Missing plugins/qa-squad/bin/templates/i18n.json")
+else:
+    try:
+        json.loads((PLUGIN / "bin" / "templates" / "i18n.json").read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        errors.append(f"Invalid JSON bin/templates/i18n.json: {e}")
+
+ARTIFACT_SKILLS = [n for n in skills if n.startswith("qa-test-")] + [
+    "qa-full-audit", "qa-final-report", "qa-retest", "qa-artifacts"]
+for name in ARTIFACT_SKILLS:
+    path = PLUGIN / "skills" / name / "SKILL.md"
+    if name not in skills:
+        errors.append(f"Skill '{name}' is expected to exist")
+        continue
+    body = path.read_text(encoding="utf-8")
+    if "qa_artifact_report.py" not in body and name != "qa-full-audit":
+        errors.append(f"skills/{name}/SKILL.md must generate the evidence/failure artifacts")
+    if "--no-artifact" not in body:
+        errors.append(f"skills/{name}/SKILL.md must document the --no-artifact opt-out")
+    if name.startswith("qa-test-") and "scope-set" not in body:
+        errors.append(f"skills/{name}/SKILL.md must document the scope flags")
+for name in ["qa-report-writer", "qa-orchestrator"]:
+    body = (PLUGIN / "agents" / f"{name}.md").read_text(encoding="utf-8")
+    if "Artifact" not in body:
+        errors.append(f"agents/{name}.md must instruct publishing the artifacts")
+for name, fm in agents.items():
+    if name in {"qa-report-writer", "qa-orchestrator", "qa-coverage-auditor", "qa-system-discovery", "qa-e2e-generator"}:
+        continue
+    body = (PLUGIN / "agents" / f"{name}.md").read_text(encoding="utf-8")
+    if "## Scope and evidence" not in body:
+        errors.append(f"agents/{name}.md is missing the 'Scope and evidence' section")
+
 # --------------------------------------------------- documented counts are true
 n_agents, n_skills = len(agents), len(skills)
 for doc in [ROOT / "README.md", ROOT / "MANIFEST.md", PLUGIN / "README.md"]:

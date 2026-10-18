@@ -13,6 +13,7 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 | `qa-record-finding` | Required pattern for a traceable finding | none (direct) |
 | `qa-coverage-matrix` | Generate the traceability matrix | none (direct) |
 | `qa-bugs` | List bugs recorded under `docs/qa/bugs/` | none (direct) |
+| `qa-artifacts` | Generate and publish the evidence and failure Artifacts of an execution | none (main conversation) |
 
 ## Orchestration skills
 

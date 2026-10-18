@@ -1,0 +1,159 @@
+{
+  "pt-BR": {
+    "gherkin": {
+      "feature": [
+        "funcionalidade",
+        "caracteristica"
+      ],
+      "background": [
+        "contexto",
+        "historico"
+      ],
+      "scenario": [
+        "esquema do cenario",
+        "cenario",
+        "exemplo"
+      ],
+      "examples": [
+        "exemplos",
+        "cenarios"
+      ],
+      "given": [
+        "dado",
+        "dada",
+        "dados",
+        "dadas"
+      ],
+      "when": [
+        "quando"
+      ],
+      "then": [
+        "então",
+        "entao"
+      ],
+      "and": [
+        "e"
+      ],
+      "but": [
+        "mas"
+      ]
+    },
+    "ui": {
+      "title_evidence": "Evidências QA",
+      "title_failures": "Falhas QA",
+      "verdict": "Veredito",
+      "PASSED": "APROVADO",
+      "FAILED": "REPROVADO",
+      "BLOCKED": "BLOQUEADO",
+      "INCOMPLETE": "INCOMPLETO",
+      "NO_DATA": "SEM DADOS",
+      "PASSED_WITH_FINDINGS": "APROVADO COM ACHADOS",
+      "PASS": "PASSOU",
+      "FAIL": "FALHOU",
+      "NOT_EXECUTED": "NÃO EXECUTADO",
+      "NOT_APPLICABLE": "N/A",
+      "summary": "Resumo",
+      "scope": "Escopo",
+      "criteria": "Critérios de aceite",
+      "coverage": "Cobertura por categoria",
+      "requirements": "Aceite por requisito",
+      "results": "Resultados",
+      "other_results": "Outros resultados",
+      "findings": "Achados",
+      "environment": "Ambiente",
+      "omitted": "Fora desta página",
+      "files": "Arquivos não embutidos",
+      "execution": "Execução",
+      "generated": "Gerado em",
+      "source": "Origem",
+      "type": "Tipo",
+      "items": "Itens",
+      "executed": "Executados",
+      "total": "Total",
+      "category": "Categoria",
+      "criterion": "Critério",
+      "status": "Situação",
+      "evidence": "Evidências",
+      "title": "Título",
+      "severity": "Severidade",
+      "result": "Resultado",
+      "preconditions": "Pré-condições",
+      "steps": "Passos",
+      "expected": "Resultado esperado",
+      "actual": "Resultado obtido",
+      "profile": "Perfil",
+      "route": "Rota",
+      "tester": "Testador",
+      "tested_at": "Testado em",
+      "bug": "Bug",
+      "finding": "Achado",
+      "no_evidence": "Nenhuma evidência registrada.",
+      "no_criteria": "Nenhum cenário executado para este critério.",
+      "story": "História",
+      "narrative": "Narrativa",
+      "branch": "Branch",
+      "commit": "Commit",
+      "base_url": "URL base",
+      "browser": "Navegador",
+      "executor": "Executor",
+      "scopes": "IDs de escopo",
+      "requirement": "Requisito",
+      "percent": "Executado",
+      "error": "Erro",
+      "observed": "Observado",
+      "hypothesis": "Hipótese (não confirmada)",
+      "reproduce": "Passos para reproduzir",
+      "moment": "Captura do momento da falha",
+      "classification": "Classificação",
+      "anchors": "Âncoras",
+      "impact": "Impacto",
+      "recommendation": "Recomendação",
+      "location": "Local",
+      "no_failures": "Sem falhas neste escopo.",
+      "failures_count": "falhas",
+      "budget_note": "O orçamento de {mb} MB foi excedido nos níveis anteriores, então a página foi reduzida (imagens por item, resolução, tamanho dos logs). O material completo continua em disco.",
+      "no_pillow": "Pillow não está instalado: as imagens são embutidas como estão e as grandes ficam de fora.",
+      "categories_filter": "Categorias",
+      "back_to_top": "Voltar ao topo",
+      "open_image": "ampliar",
+      "log": "Log",
+      "missing": "arquivo não encontrado",
+      "size": "tamanho",
+      "desc_evidence": "Relatório de evidências de {scope}: veredito {verdict}, {summary}.",
+      "desc_failures": "Relatório de falhas de {scope}: {count} falha(s) com passos para reproduzir e evidências.",
+      "summary_counts": "{passed} passaram, {failed} falharam, {blocked} bloqueados, {ne} não executados",
+      "orphan": "fora do inventário",
+      "child_scopes": "Escopos filhos",
+      "failures_title": "Falhas"
+    },
+    "vocabulary": {
+      "title_keys": [
+        "titulo"
+      ],
+      "narrative_starters": [
+        "como",
+        "eu, como",
+        "eu como"
+      ],
+      "criteria_labels": [
+        "critérios de aceite",
+        "critério de aceite",
+        "criterios de aceite",
+        "criterio de aceite",
+        "aceite"
+      ],
+      "persona_keys": [
+        "persona",
+        "personas"
+      ],
+      "priority_keys": [
+        "prioridade"
+      ],
+      "status_keys": [
+        "status",
+        "situação",
+        "situacao"
+      ]
+    }
+  }
+}

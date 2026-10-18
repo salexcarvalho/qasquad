@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-10-11T23:24:34.014484+00:00",
+  "execution": "exec-20261011T120000Z",
+  "scope": {
+    "type": "story",
+    "id": "US-DEMO-01",
+    "title": "Sign in with e-mail and password"
+  },
+  "verdict": "FAILED",
+  "counts": {
+    "PASS": 2,
+    "FAIL": 1,
+    "BLOCKED": 0,
+    "NOT_EXECUTED": 0,
+    "NOT_APPLICABLE": 0
+  },
+  "findings": 1,
+  "failures": 1,
+  "message": "1 failure(s) in scope US-DEMO-01: failure report generated.",
+  "language": "en",
+  "files": [
+    {
+      "kind": "evidence",
+      "mode": "artifact",
+      "file_path": "/home/salexcarvalho/Pessoal/claude-code-qa-squad-github/examples/artifact-report/artifacts/qa-evidence-US-DEMO-01.html",
+      "title": "QA Evidence US-DEMO-01",
+      "bytes": 32302,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 3,
+      "icon": "report",
+      "description": "Evidence report for US-DEMO-01: verdict FAILED, 2 passed, 1 failed, 0 blocked, 0 not executed."
+    },
+    {
+      "kind": "failures",
+      "mode": "artifact",
+      "file_path": "/home/salexcarvalho/Pessoal/claude-code-qa-squad-github/examples/artifact-report/artifacts/qa-failures-US-DEMO-01.html",
+      "title": "QA Failures US-DEMO-01",
+      "bytes": 22184,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 2,
+      "icon": "bug",
+      "description": "Failure report for US-DEMO-01: 1 failure(s) with steps to reproduce and evidence."
+    },
+    {
+      "kind": "evidence",
+      "mode": "standalone",
+      "file_path": "docs/qa/executions/exec-20261011T120000Z/scope-US-DEMO-01/evidence-report.html",
+      "title": "QA Evidence US-DEMO-01",
+      "bytes": 32465,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 3
+    },
+    {
+      "kind": "failures",
+      "mode": "standalone",
+      "file_path": "docs/qa/executions/exec-20261011T120000Z/scope-US-DEMO-01/failure-report.html",
+      "title": "QA Failures US-DEMO-01",
+      "bytes": 22347,
+      "level": 0,
+      "over_budget": false,
+      "images_embedded": 2
+    }
+  ]
+}

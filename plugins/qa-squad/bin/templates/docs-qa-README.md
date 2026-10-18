@@ -31,6 +31,21 @@ docs/qa/
     evidence-manifest.json
 ```
 
+## Scopes and reports
+
+An execution is tied to one scope: `full`, or a user story, feature, spec or epic.
+
+```text
+executions/<execution_id>/
+  scope.json        type, id, title, source, acceptance criteria
+  manifest.json     every in-scope item, finding and bug (input of the report generator)
+  scope-<id>/       reports.json, scope.json, and the standalone HTML reports when generated
+```
+
+`qa_artifact_report.py` renders an evidence report (and a failure report only when there is a
+failure or a finding) from `manifest.json`. A scope's reports list only items whose `scope_ids`
+include that scope.
+
 ## Running an execution
 
 ```bash
