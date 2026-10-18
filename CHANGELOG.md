@@ -41,6 +41,14 @@ All notable changes to this project will be documented here.
   failure, story without failure, isolation, Artifact contract, secrets, budget, opt-out,
   language, `--selftest`), new hook tests, fixtures under `tests/fixtures/`.
 - `docs/artifacts-and-scope.md`.
+- npm package `@salexcarvalho/qasquad` with a zero-dependency installer:
+  `npx @salexcarvalho/qasquad install [--scope user|project|local]` registers the
+  marketplace and installs the plugin through the `claude` CLI; `uninstall`, `--help` and
+  `--version` are also available.
+- `release-npm` GitHub Actions workflow: on a `v*` tag, verifies the tag matches
+  `package.json`, runs the tests and publishes to npm with provenance.
+- `tests/npm-package.test.js` (node:test): version sync across `package.json`,
+  `plugin.json` and `marketplace.json`, plus installer CLI smoke tests.
 
 ### Changed
 - All testing agents gained a "Scope and evidence" section; `qa-scenario-tester` executes the

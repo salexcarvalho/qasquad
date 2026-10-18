@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run the full QA Squad test suite and report a single aggregated result."""
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,13 +26,22 @@ def main() -> int:
         if proc.returncode != 0:
             failed.append(label)
 
+    node = shutil.which("node")
+    print("\n=== npm package (node:test) ===")
+    if node is None:
+        print("node not found; skipping npm package tests")
+    elif subprocess.run(
+        [node, "--test", str(TESTS_DIR / "npm-package.test.js")], text=True
+    ).returncode != 0:
+        failed.append("npm package")
+
     print("\n" + "=" * 46)
     if failed:
-        print(f"SUITE FAILED: {len(failed)} of {len(SUITES)} groups failed")
+        print(f"SUITE FAILED: {len(failed)} groups failed")
         for label in failed:
             print(f"  - {label}")
         return 1
-    print(f"SUITE PASSED: {len(SUITES)}/{len(SUITES)} groups")
+    print("SUITE PASSED: all groups")
     return 0
 
 
