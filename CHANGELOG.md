@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented here.
 
+## [Unreleased]
+
+### Added
+- npm package `@salexcarvalho/qasquad` with a zero-dependency installer:
+  `npx @salexcarvalho/qasquad install [--scope user|project|local]` registers the
+  marketplace and installs the plugin through the `claude` CLI; `uninstall`, `--help` and
+  `--version` are also available.
+- `release-npm` GitHub Actions workflow: on a `v*` tag, verifies the tag matches
+  `package.json`, runs the tests and publishes to npm with provenance.
+- `tests/npm-package.test.js` (node:test): version sync across `package.json`,
+  `plugin.json` and `marketplace.json`, plus installer CLI smoke tests.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added

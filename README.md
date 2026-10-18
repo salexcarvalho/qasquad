@@ -94,9 +94,19 @@ qasquad/
 
 Claude Code requires plugin `agents/` and `skills/` to live at the plugin root, not inside `.claude-plugin/`.
 
+## Install
+
+With npm (requires Node 18+ and the Claude Code CLI):
+
+```bash
+npx @salexcarvalho/qasquad install            # user scope (default)
+npx @salexcarvalho/qasquad install --scope project
+npx @salexcarvalho/qasquad uninstall
+```
+
 ## Install from GitHub marketplace
 
-Install directly from GitHub:
+Or install directly from GitHub inside Claude Code:
 
 ```text
 /plugin marketplace add salexcarvalho/qasquad
