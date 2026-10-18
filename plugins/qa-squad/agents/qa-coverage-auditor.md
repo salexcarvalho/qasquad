@@ -85,6 +85,11 @@ Look for a false 100% caused by:
 - generated scenarios that do not name the inventory IDs they cover, or inventoried
   features, workflows, forms and permissions that no scenario covers.
 
+When a scope is active (`qa-cli scope-show`), also check that every acceptance criterion of
+the scope has an executed scenario, that nothing outside the scope was reported, and that
+failed results carry a screenshot of the moment. A criterion with no scenario is a gap, not a
+pass.
+
 Cross-sample the code and the UI to verify the denominator. When you discover new items, add
 them to the inventory; coverage is expected to drop until they are tested.
 

@@ -26,6 +26,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qa_scope  # noqa: E402  (sibling module: story parsing, scope resolution, settings)
+
 ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR", Path.cwd())).resolve()
 QA = ROOT / ".qa"
 INV = QA / "inventory"
@@ -38,6 +41,7 @@ CONFIG = QA / "config.json"
 DECLARED_EMPTY = QA / "declared-empty.json"
 
 SCENARIO_SCAN = QA / "scenario-scan.json"
+ACTIVE_SCOPE = QA / "scope.json"
 
 # Deterministic, publishable QA artifacts. This subsystem is read-only with
 # respect to `.qa/` (it only reads the inventory and recorded results from
@@ -178,6 +182,7 @@ def init(args) -> None:
             "required_viewports": ["desktop", "mobile"],
             "allowed_result_statuses": sorted(COUNTED),
             "severity_scale": SEVERITY_ORDER,
+            "artifacts": {"publish": True, "language": "en", "budget_mb": 12},
             "notes": (
                 "Adapt categories and requirements to the project, but do not lower navigation "
                 "coverage when the audit goal is 100% of menus and submenus. Promote a tracked "
@@ -204,6 +209,35 @@ def init(args) -> None:
             state["audit_goal"] = args.goal
         save(STATE, state)
     print(f"QA initialized at {QA}")
+
+
+# ------------------------------------------------------------------------------ scope
+#
+# A run may be tied to one user story, feature, spec or epic. The active scope lives in
+# `.qa/scope.json`; inventory items, results and findings recorded while it is active are
+# tagged with `scope_ids`, and the report generator filters on those tags.
+
+
+def active_scope() -> dict | None:
+    data = load(ACTIVE_SCOPE)
+    return data if isinstance(data, dict) and data.get("id") else None
+
+
+def active_scope_ids() -> list[str]:
+    """IDs to stamp on new records. Empty for the `full` scope, which keeps legacy behavior."""
+    scope = active_scope()
+    if not scope or scope.get("type") == "full":
+        return []
+    return list(scope.get("ids") or [scope["id"]])
+
+
+def merge_ids(*groups) -> list[str]:
+    out: list[str] = []
+    for group in groups:
+        for value in group or []:
+            if value and value not in out:
+                out.append(str(value))
+    return out
 
 
 def inventory_path(cat: str) -> Path:
@@ -236,6 +270,11 @@ def add_inventory(args) -> None:
         "metadata": json.loads(args.metadata) if args.metadata else {},
         "discovered_at": now(),
     }
+    tagged = merge_ids(payload["metadata"].get("scope_ids"), getattr(args, "scope_id", None) or [])
+    if not tagged:
+        tagged = active_scope_ids()
+    if tagged:
+        payload["metadata"]["scope_ids"] = tagged
     existing[args.id] = payload
     save(path, {"category": cat, "items": list(existing.values())})
     # Adding an item to a category contradicts any previous "this category is
@@ -270,6 +309,14 @@ def record(args) -> None:
             file=sys.stderr,
         )
     path = RES / cat / result_filename(args.id)
+    inv_meta = {}
+    for item in normalize_inventory(load(inventory_path(cat), [])):
+        if str(item.get("id")) == args.id:
+            inv_meta = item.get("metadata") or {}
+            break
+    tagged = merge_ids(getattr(args, "scope_id", None), inv_meta.get("scope_ids"))
+    if not tagged:
+        tagged = active_scope_ids()
     data = {
         "id": args.id,
         "category": cat,
@@ -282,6 +329,11 @@ def record(args) -> None:
         "finding_ids": args.finding_id or [],
         "tester": args.tester or "claude",
     }
+    if tagged:
+        data["scope_ids"] = tagged
+    criterion = getattr(args, "criterion_id", None) or inv_meta.get("criterion_id")
+    if criterion:
+        data["criterion_id"] = criterion
     save(path, data)
     print(f"recorded:{cat}:{args.id}:{args.status}")
 
@@ -309,6 +361,12 @@ def add_finding(args) -> None:
         "evidence": args.evidence or [],
         "created_at": now(),
     }
+    tagged = merge_ids(getattr(args, "scope_id", None)) or active_scope_ids()
+    if tagged:
+        data["scope_ids"] = tagged
+    for key in ("criterion_id", "scenario_id"):
+        if getattr(args, key, None):
+            data[key] = getattr(args, key)
     save(FIND / f"{fid}.json", data)
     print(fid)
 
@@ -811,12 +869,26 @@ def scenario_scan(args) -> int:
     if args.do_import:
         path = inventory_path(SCENARIOS)
         existing = {str(x.get("id")): x for x in normalize_inventory(load(path, [])) if x.get("id") is not None}
+        scope = active_scope()
+        scoped = scope if scope and scope.get("type") != "full" else None
         for item in scenario_items(scan):
             if item["id"] not in existing:
                 imported += 1
                 existing[item["id"]] = {
                     **item, "profile_id": None, "route": None, "parent_id": None, "discovered_at": now(),
                 }
+            # Under an active scope an existing scenario belongs to it only when it says so:
+            # the scope ID appears in its id, title, source or feature name.
+            if scoped and item["kind"] != "suite":
+                haystack = " ".join([
+                    item["id"], item.get("label", ""),
+                    str((item.get("metadata") or {}).get("source", "")),
+                    str((item.get("metadata") or {}).get("feature", "")),
+                ]).lower()
+                hit = [i for i in qa_scope.all_scope_ids(scoped) if i.lower() in haystack]
+                if hit:
+                    meta = existing[item["id"]].setdefault("metadata", {})
+                    meta["scope_ids"] = merge_ids(meta.get("scope_ids"), scoped.get("ids"), hit)
         save(path, {"category": SCENARIOS, "items": list(existing.values())})
 
     state = load(STATE, {}) or {}
@@ -925,6 +997,135 @@ def finish(args) -> None:
     state["updated_at"] = now()
     save(STATE, state)
     print(f"QA run closed: {state['status']}")
+
+
+def import_criteria(scope: dict) -> int:
+    """Turn the acceptance criteria of a scope into executable scenarios in the inventory.
+
+    One scenario per criterion, tagged with the story and its parents, and carrying the story
+    ID as `requirement_id` so the per-requirement acceptance report picks it up.
+    """
+    sources = {ch["id"]: ch.get("source", "") for ch in scope.get("children", [])}
+    sources[scope["id"]] = scope.get("source", "")
+    path = inventory_path(SCENARIOS)
+    existing = {str(x.get("id")): x for x in normalize_inventory(load(path, []))}
+    count = 0
+    for c in scope.get("acceptance_criteria", []):
+        owner = c.get("story_id") or scope["id"]
+        exe = qa_scope.executable_from_criterion(c)
+        item_id = f"scenario:criterion:{c['id']}"
+        existing[item_id] = {
+            "id": item_id,
+            "kind": "gherkin" if c.get("kind") == "gherkin" else "documented",
+            "label": c.get("title") or item_id,
+            "profile_id": None, "route": None, "parent_id": None,
+            "metadata": {
+                "origin": "acceptance-criterion",
+                "source": sources.get(owner) or scope.get("source", ""),
+                "requirement_id": owner,
+                "criterion_id": c["id"],
+                "scope_ids": merge_ids([owner], scope.get("ids")),
+                "preconditions": exe["preconditions"],
+                "steps": exe["steps"],
+                "expected": exe["expected"],
+                "steps_gherkin": [f"{s['keyword']} {s['text']}" for s in c.get("steps", [])],
+                "covers": [],
+            },
+            "discovered_at": now(),
+        }
+        count += 1
+    if count:
+        save(path, {"category": SCENARIOS, "items": list(existing.values())})
+    return count
+
+
+def scope_set(args) -> int:
+    ensure_dirs()
+    picked = [(t, v) for t, v in (
+        ("story", args.story), ("feature", args.feature), ("spec", args.spec),
+        ("epic", args.epic), ("auto", args.scope),
+    ) if v]
+    if args.full:
+        picked.append(("full", "full"))
+    if len(picked) != 1:
+        raise SystemExit(
+            "Pass exactly one of --story, --feature, --spec, --epic, --scope or --full."
+        )
+    scope_type, value = picked[0]
+    try:
+        scope = qa_scope.resolve_scope(
+            ROOT, scope_type=scope_type, value=value, title=args.title or "",
+            source=args.source, criteria=args.criterion or [],
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    scope["set_at"] = now()
+    save(ACTIVE_SCOPE, scope)
+    imported = 0
+    if scope["type"] != "full" and not args.no_import:
+        imported = import_criteria(scope)
+    print(
+        f"scope:{scope['type']}:{scope['id']} criteria={len(scope['acceptance_criteria'])} "
+        f"imported={imported} children={len(scope['children'])}"
+    )
+    return 0
+
+
+def scope_tag(args) -> int:
+    """Attach scope IDs to inventory items that were discovered before the scope was set."""
+    ensure_dirs()
+    ids = merge_ids(args.scope_id) or active_scope_ids()
+    if not ids:
+        raise SystemExit("No scope to tag with. Run 'scope-set' first or pass --scope-id.")
+    if not args.id and not args.match:
+        raise SystemExit("Pass --id (repeatable) and/or --match <text>.")
+    cats = [validate_category(args.category)] if args.category else sorted(p.stem for p in INV.glob("*.json"))
+    wanted = {str(i) for i in args.id or []}
+    needle = (args.match or "").lower()
+    tagged: list[str] = []
+    for cat in cats:
+        path = inventory_path(cat)
+        items = normalize_inventory(load(path, []))
+        changed = False
+        for item in items:
+            haystack = " ".join([
+                str(item.get("id", "")), str(item.get("label", "")), str(item.get("route") or ""),
+                " ".join(map(str, (item.get("metadata") or {}).get("covers") or [])),
+            ]).lower()
+            if str(item.get("id")) in wanted or (needle and needle in haystack):
+                meta = item.setdefault("metadata", {})
+                merged = merge_ids(meta.get("scope_ids"), ids)
+                if merged != meta.get("scope_ids"):
+                    meta["scope_ids"] = merged
+                    changed = True
+                tagged.append(f"{cat}:{item.get('id')}")
+        if changed:
+            save(path, {"category": cat, "items": items})
+    for t in tagged:
+        print(f"tagged:{t}")
+    print(f"scope-tag: {len(tagged)} item(s) tagged with {', '.join(ids)}")
+    return 0
+
+
+def scope_show(args) -> int:
+    scope = active_scope()
+    if args.json:
+        print(json.dumps(scope or qa_scope.full_scope(), indent=2, ensure_ascii=False))
+        return 0
+    if not scope:
+        print("scope: full (no active scope)")
+        return 0
+    print(f"scope: {scope['type']} {scope['id']} - {scope.get('title', '')}")
+    print(f"source: {scope.get('source') or 'NOT_AVAILABLE'}")
+    print(f"criteria: {len(scope.get('acceptance_criteria', []))}  children: {len(scope.get('children', []))}")
+    return 0
+
+
+def scope_clear(args) -> int:
+    if ACTIVE_SCOPE.exists():
+        ACTIVE_SCOPE.unlink()
+    print("scope cleared: full")
+    return 0
 
 
 # --------------------------------------------------------------- docs/qa export
@@ -1097,7 +1298,12 @@ def materialize_docs_readme() -> None:
 
 def execution_start(args) -> None:
     ensure_docs_dirs()
-    execution_id = f"exec-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    base_id = f"exec-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    execution_id, n = base_id, 1
+    while (DOCS_EXECUTIONS / execution_id).exists():
+        # Two executions started within the same second must never share (and overwrite) a folder.
+        n += 1
+        execution_id = f"{base_id}-{n}"
     env: dict[str, str] = {}
     for kv in args.environment or []:
         if "=" in kv:
@@ -1105,8 +1311,10 @@ def execution_start(args) -> None:
             env[k] = v
     branch = git_value(["rev-parse", "--abbrev-ref", "HEAD"])
     commit = git_value(["rev-parse", "HEAD"])
+    scope = active_scope() or qa_scope.full_scope()
     data = {
         "execution_id": execution_id,
+        "scope": {"type": scope["type"], "id": scope["id"], "title": scope.get("title", "")},
         "project": ROOT.name,
         "branch": branch,
         "commit": commit,
@@ -1122,6 +1330,7 @@ def execution_start(args) -> None:
     }
     exec_dir = DOCS_EXECUTIONS / execution_id
     save(exec_dir / "execution.json", data)
+    save(exec_dir / "scope.json", scope)
     save(exec_dir / "environment.json", {
         "branch": branch,
         "commit": commit,
@@ -1220,12 +1429,18 @@ def execution_finish(args) -> int:
         )
     status_value = args.status or "COMPLETED"
 
+    scope = load(exec_dir / "scope.json") or qa_scope.full_scope()
+    scope_filter = None if scope.get("type") == "full" else set(qa_scope.all_scope_ids(scope))
+
     items = normalize_inventory(load(inventory_path(SCENARIOS), []))
     results = load_results(SCENARIOS)
     counts = {s: 0 for s in EXPORT_STATUSES}
     for item in items:
         sid = str(item.get("id"))
         result = results.get(sid)
+        item_scope = merge_ids((item.get("metadata") or {}).get("scope_ids"), (result or {}).get("scope_ids"))
+        if scope_filter is not None and not scope_filter.intersection(item_scope):
+            continue
         status_label = map_scenario_status(result)
         counts[status_label] += 1
         meta = item.get("metadata") or {}
@@ -1250,16 +1465,165 @@ def execution_finish(args) -> int:
             "tested_at": (result or {}).get("tested_at"),
             "bug_id": None,
         }
+        if item_scope:
+            result_doc["scope_ids"] = item_scope
+        criterion = (result or {}).get("criterion_id") or meta.get("criterion_id")
+        if criterion:
+            result_doc["criterion_id"] = criterion
         save(scen_dir / "result.json", result_doc)
         write_scenario_report(scen_dir, result_doc, meta, execution)
 
     execution["finished_at"] = now()
     execution["status"] = status_value
     save(exec_path, execution)
+    manifest = build_manifest(execution_id, execution, scope, scope_filter)
+    save(exec_dir / "manifest.json", manifest)
     print(
         f"execution {execution_id} finished: status={status_value} "
         + " ".join(f"{k}={v}" for k, v in counts.items())
+        + f" scope={scope['id']} manifest=executions/{execution_id}/manifest.json"
     )
+    return 0
+
+
+MANIFEST_SCHEMA = "qa-squad/manifest/1"
+
+
+TEXT_FIELDS = {
+    "label", "actual", "expected", "preconditions", "steps", "steps_gherkin", "title", "reproduction",
+    "impact", "recommendation", "location", "summary", "observed_fact", "technical_hypothesis",
+}
+
+
+def _clean_strings(obj, keys=None):
+    """Run the secret sanitizer over free-text fields only (never over IDs or file paths)."""
+    if isinstance(obj, str):
+        return sanitize_text(obj)[0]
+    if isinstance(obj, list):
+        return [_clean_strings(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: (_clean_strings(v) if k in TEXT_FIELDS else v) for k, v in obj.items()}
+    return obj
+
+
+def manifest_bugs(execution_id: str) -> list[dict]:
+    out = []
+    if DOCS_BUGS.exists():
+        for d in sorted(DOCS_BUGS.iterdir()):
+            bug = load(d / "bug.json")
+            if bug and bug.get("execution_id") == execution_id:
+                out.append(_clean_strings({
+                    k: bug.get(k) for k in (
+                        "bug_id", "scenario_id", "requirement_id", "classification", "severity",
+                        "summary", "observed_fact", "technical_hypothesis", "evidence",
+                        "retest_history", "scope_ids",
+                    )
+                }))
+    return out
+
+
+def build_manifest(execution_id: str, execution: dict, scope: dict, scope_filter) -> dict:
+    """Index of one finished execution: every in-scope item, finding and bug, in one JSON file.
+
+    This is the input of `qa_artifact_report.py`. It is a snapshot taken when the execution
+    finishes, so the execution stays immutable even if the ledger keeps changing afterwards.
+    """
+    exported = {r["scenario_id"]: r for r in iter_exported_results(execution_id)}
+    categories = sorted({p.stem for p in INV.glob("*.json")} | {p.name for p in RES.glob("*") if p.is_dir()}) \
+        if INV.exists() or RES.exists() else []
+    items: list[dict] = []
+    for cat in categories:
+        inventory = normalize_inventory(load(inventory_path(cat), []))
+        results = load_results(cat)
+        known = set()
+        rows = [(it, results.get(str(it.get("id")))) for it in inventory]
+        for it in inventory:
+            known.add(str(it.get("id")))
+        rows += [({"id": rid, "kind": "orphan", "label": rid, "metadata": {}}, r)
+                 for rid, r in results.items() if rid not in known]
+        for it, result in rows:
+            iid = str(it.get("id"))
+            meta = it.get("metadata") or {}
+            item_scope = merge_ids(meta.get("scope_ids"), (result or {}).get("scope_ids"))
+            if scope_filter is not None and not scope_filter.intersection(item_scope):
+                continue
+            dirname = scenario_dir_name(iid)
+            if cat == SCENARIOS and iid in exported:
+                ex = exported[iid]
+                evidence, status_label, notes = ex.get("evidence") or [], ex["status"], ex.get("notes") or ""
+                bug_id = ex.get("bug_id")
+            else:
+                evidence, redacted = copy_scenario_evidence(execution_id, dirname, (result or {}).get("evidence") or [])
+                status_label = map_scenario_status(result)
+                notes = (result or {}).get("notes") or ""
+                if redacted:
+                    notes = f"{notes} Evidence sanitized: one or more secrets were redacted before export.".strip()
+                bug_id = None
+            items.append(_clean_strings({
+                "id": iid, "category": cat, "kind": it.get("kind") or "",
+                "label": it.get("label") or iid, "status": status_label,
+                "profile_id": (result or {}).get("profile_id") or it.get("profile_id"),
+                "route": it.get("route"), "scope_ids": item_scope,
+                "requirement_id": meta.get("requirement_id") or "NOT_AVAILABLE",
+                "criterion_id": (result or {}).get("criterion_id") or meta.get("criterion_id"),
+                "origin": meta.get("origin"), "source": meta.get("source"),
+                "preconditions": meta.get("preconditions") or "",
+                "steps": meta.get("steps") or [], "steps_gherkin": meta.get("steps_gherkin") or [],
+                "expected": meta.get("expected") or "",
+                "actual": notes, "evidence": evidence,
+                "finding_ids": (result or {}).get("finding_ids") or [], "bug_id": bug_id,
+                "tested_at": (result or {}).get("tested_at"),
+                "tester": (result or {}).get("tester"), "orphan": it.get("kind") == "orphan",
+            }))
+    in_scope_findings = {fid for i in items for fid in i["finding_ids"]}
+    findings: list[dict] = []
+    if FIND.exists():
+        for p in sorted(FIND.glob("*.json")):
+            f = load(p, {}) or {}
+            if not f.get("id"):
+                continue
+            tagged = f.get("scope_ids") or []
+            if scope_filter is not None and not (scope_filter.intersection(tagged) or f["id"] in in_scope_findings):
+                continue
+            evidence, _ = copy_scenario_evidence(execution_id, "finding-" + scenario_dir_name(f["id"]), f.get("evidence") or [])
+            findings.append(_clean_strings({**f, "evidence": evidence, "scope_ids": tagged}))
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "generated_at": now(),
+        "execution": execution,
+        "scope": scope,
+        "items": items,
+        "findings": findings,
+        "bugs": manifest_bugs(execution_id),
+    }
+
+
+def refresh_manifest_bugs(execution_id: str) -> None:
+    """Patch bug links into an existing manifest without re-reading the live ledger."""
+    path = DOCS_EXECUTIONS / execution_id / "manifest.json"
+    manifest = load(path)
+    if not manifest:
+        return
+    exported = {r["scenario_id"]: r for r in iter_exported_results(execution_id)}
+    for item in manifest.get("items", []):
+        ex = exported.get(item["id"])
+        if ex and ex.get("bug_id"):
+            item["bug_id"] = ex["bug_id"]
+    manifest["bugs"] = manifest_bugs(execution_id)
+    save(path, manifest)
+
+
+def manifest_cmd(args) -> int:
+    execution_id = args.execution
+    path = DOCS_EXECUTIONS / execution_id / "manifest.json"
+    manifest = load(path)
+    if manifest is None:
+        raise SystemExit(
+            f"Execution '{execution_id}' has no manifest. Run 'qa-cli execution-finish' first; "
+            "the manifest is written when an execution finishes."
+        )
+    refresh_manifest_bugs(execution_id)
+    print(f"manifest: {path.relative_to(ROOT).as_posix()}")
     return 0
 
 
@@ -1531,11 +1895,14 @@ def bug_report(args) -> None:
         "created_at": now(),
         "retest_history": [],
     }
+    if result.get("scope_ids"):
+        bug["scope_ids"] = result["scope_ids"]
     bug_dir = DOCS_BUGS / bug_id
     save(bug_dir / "bug.json", bug)
     write_bug_report(bug_dir, bug)
     result["bug_id"] = bug_id
     save(result_path, result)
+    refresh_manifest_bugs(execution_id)
     print(bug_id)
 
 
@@ -1739,6 +2106,8 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--route")
     q.add_argument("--parent-id")
     q.add_argument("--metadata")
+    q.add_argument("--scope-id", action="append",
+                   help="tag the item with a scope ID (repeatable); defaults to the active scope")
     q.set_defaults(fn=add_inventory)
 
     q = sp.add_parser("record", help="persist the result of testing one inventory item")
@@ -1751,6 +2120,9 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--scenario")
     q.add_argument("--finding-id", action="append")
     q.add_argument("--tester")
+    q.add_argument("--scope-id", action="append",
+                   help="tag the result with a scope ID (repeatable); defaults to the item's or the active scope")
+    q.add_argument("--criterion-id", help="acceptance criterion this result proves or disproves")
     q.set_defaults(fn=record)
 
     q = sp.add_parser("finding", help="record a traceable defect")
@@ -1767,6 +2139,10 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--impact")
     q.add_argument("--recommendation")
     q.add_argument("--evidence", action="append")
+    q.add_argument("--scope-id", action="append",
+                   help="tag the finding with a scope ID (repeatable); defaults to the active scope")
+    q.add_argument("--criterion-id", help="acceptance criterion the finding violates")
+    q.add_argument("--scenario-id", help="scenario (inventory ID) in which the finding was observed")
     q.set_defaults(fn=add_finding)
 
     q = sp.add_parser("declare-empty",
@@ -1848,6 +2224,40 @@ def parser() -> argparse.ArgumentParser:
     q.add_argument("--classification", choices=BUG_CLASSIFICATIONS)
     q.add_argument("--format", choices=["markdown", "json"], default="markdown")
     q.set_defaults(fn=bugs_list)
+
+    q = sp.add_parser("scope-set",
+                      help="restrict this run to a story, feature, spec or epic (and import its acceptance criteria)")
+    q.add_argument("--story", help="user story ID, e.g. US-A01-03")
+    q.add_argument("--feature", help="feature name or ID")
+    q.add_argument("--spec", help="path to a spec or story document")
+    q.add_argument("--epic", help="epic ID, e.g. A01")
+    q.add_argument("--scope", help="any of the above; the type is detected from the value")
+    q.add_argument("--full", action="store_true", help="whole product (same as scope-clear, but explicit)")
+    q.add_argument("--title")
+    q.add_argument("--source", help="file or folder to search for the story or epic")
+    q.add_argument("--criterion", action="append",
+                   help="acceptance criterion written by hand (repeatable); 'Given a; When b; Then c' or plain text")
+    q.add_argument("--no-import", action="store_true", help="do not turn the criteria into scenarios")
+    q.set_defaults(fn=scope_set)
+
+    q = sp.add_parser("scope-tag",
+                      help="tag already-inventoried items as belonging to a scope (by --id or --match text)")
+    q.add_argument("--category", help="limit to one category (default: every inventory)")
+    q.add_argument("--id", action="append", help="inventory item ID (repeatable)")
+    q.add_argument("--match", help="case-insensitive text found in the item's ID, label, route or covers")
+    q.add_argument("--scope-id", action="append", help="scope ID to attach (default: the active scope)")
+    q.set_defaults(fn=scope_tag)
+
+    q = sp.add_parser("scope-show", help="show the active scope")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(fn=scope_show)
+
+    q = sp.add_parser("scope-clear", help="go back to the full scope")
+    q.set_defaults(fn=scope_clear)
+
+    q = sp.add_parser("manifest", help="refresh and locate the manifest.json of a finished execution")
+    q.add_argument("--execution", required=True)
+    q.set_defaults(fn=manifest_cmd)
 
     q = sp.add_parser("final-report", help="aggregate every requirement's acceptance into one execution summary")
     q.add_argument("--execution", required=True)

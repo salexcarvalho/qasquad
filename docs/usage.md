@@ -46,7 +46,11 @@ accessibility and error handling.
 /qa-squad:qa-final-report
 /qa-squad:qa-bugs
 /qa-squad:qa-retest
+/qa-squad:qa-artifacts
 ```
+
+Every `qa-test-*` skill, `qa-full-audit`, `qa-retest` and `qa-final-report` accept the scope
+flags `--story`, `--feature`, `--spec`, `--epic`, `--scope` and the opt-out `--no-artifact`.
 
 ## Test scenarios
 
@@ -88,6 +92,13 @@ ledger (see [architecture](architecture.md#qa-versus-docsqa)). Use the skills, n
 - `/qa-squad:qa-retest <bug-id>` — re-executes the scenario behind a bug, opens a new
   execution, and appends the outcome to that bug's retest history without erasing prior
   attempts.
+
+## Evidence and failure artifacts
+
+Each run ends with an evidence report and, when there is a failure or a finding, a failure
+report, published as Artifacts (default ON). `/qa-squad:qa-artifacts` regenerates and
+re-publishes them for any finished execution, for one scope or one coverage lane. Full
+reference: [artifacts-and-scope.md](artifacts-and-scope.md).
 
 ## Reading coverage
 

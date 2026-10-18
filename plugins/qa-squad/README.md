@@ -5,9 +5,11 @@ This is the installable Claude Code plugin directory.
 Visible components:
 
 - `agents/` — 20 generic QA agents
-- `skills/` — 27 QA skills
+- `skills/` — 28 QA skills
 - `hooks/` — deterministic coverage and secret-safety hooks
 - `bin/qa-cli` — project-local QA coverage ledger CLI
+- `bin/qa_artifact_report.py` — evidence and failure report generator (Artifact-ready HTML)
+- `bin/qa_scope.py` — user stories, scope resolution and report settings
 - `.mcp.json` — Playwright MCP browser integration
 - `.claude-plugin/plugin.json` — plugin metadata
 

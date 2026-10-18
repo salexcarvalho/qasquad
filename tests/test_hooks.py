@@ -59,18 +59,61 @@ def test_stop_hook_blocks_incomplete_audit():
         check("nav:1" in data.get("reason", ""), "reason must name the missing item")
 
 
-def test_stop_hook_allows_complete_audit():
+def make_complete_audit(r):
+    cli(r, "init", "--goal", "hook test")
+    for cat in ["profiles", "navigation", "features", "forms", "workflows", "permissions"]:
+        cli(r, "declare-empty", "--category", cat, "--notes", "not applicable")
+    cli(r, "scenario-scan")
+    cli(r, "inventory-add", "--category", "scenarios", "--id", "scenario:generated:x", "--kind", "generated")
+    cli(r, "record", "--category", "scenarios", "--id", "scenario:generated:x", "--status", "passed")
+    cli(r, "mark-discovery-complete", "--notes", "done")
+
+
+def test_stop_hook_requires_artifacts_for_complete_audit():
+    """Coverage alone no longer ends a run: the evidence report must have been generated."""
     with tempfile.TemporaryDirectory() as d:
         r = Path(d)
-        cli(r, "init", "--goal", "hook test")
-        for cat in ["profiles", "navigation", "features", "forms", "workflows", "permissions"]:
-            cli(r, "declare-empty", "--category", cat, "--notes", "not applicable")
-        cli(r, "scenario-scan")
-        cli(r, "inventory-add", "--category", "scenarios", "--id", "scenario:generated:x", "--kind", "generated")
-        cli(r, "record", "--category", "scenarios", "--id", "scenario:generated:x", "--status", "passed")
-        cli(r, "mark-discovery-complete", "--notes", "done")
+        make_complete_audit(r)
         p = run_hook(STOP_HOOK, r, {"cwd": d})
-        check(p.stdout.strip() == "", f"hook must allow a complete audit, got: {p.stdout}")
+        data = json.loads(p.stdout)
+        check(data.get("decision") == "block", f"complete audit without artifacts must block, got: {p.stdout}")
+        check("qa_artifact_report.py" in data.get("reason", ""), "reason must name the generator")
+        p = run_hook(STOP_HOOK, r, {"cwd": d, "stop_hook_active": True})
+        check(p.stdout.strip() == "", "a hook that already blocked once must not block again")
+
+
+def test_stop_hook_allows_complete_audit_after_artifacts():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        make_complete_audit(r)
+        (r / ".qa" / "artifacts").mkdir(parents=True, exist_ok=True)
+        (r / ".qa" / "artifacts" / "index.json").write_text(
+            json.dumps([{"generated_at": "2999-01-01T00:00:00+00:00"}]))
+        p = run_hook(STOP_HOOK, r, {"cwd": d})
+        check(p.stdout.strip() == "", f"hook must allow once artifacts exist, got: {p.stdout}")
+
+
+def test_stop_hook_allows_complete_audit_when_opted_out():
+    with tempfile.TemporaryDirectory() as d:
+        r = Path(d)
+        make_complete_audit(r)
+        cfg = json.loads((r / ".qa" / "config.json").read_text())
+        cfg["artifacts"] = {"publish": False}
+        (r / ".qa" / "config.json").write_text(json.dumps(cfg))
+        p = run_hook(STOP_HOOK, r, {"cwd": d})
+        check(p.stdout.strip() == "", f"config opt-out must be honoured, got: {p.stdout}")
+        cfg["artifacts"] = {"publish": True}
+        (r / ".qa" / "config.json").write_text(json.dumps(cfg))
+        env_before = os.environ.get("QA_SQUAD_NO_ARTIFACT")
+        os.environ["QA_SQUAD_NO_ARTIFACT"] = "1"
+        try:
+            p = run_hook(STOP_HOOK, r, {"cwd": d})
+        finally:
+            if env_before is None:
+                os.environ.pop("QA_SQUAD_NO_ARTIFACT", None)
+            else:
+                os.environ["QA_SQUAD_NO_ARTIFACT"] = env_before
+        check(p.stdout.strip() == "", f"environment opt-out must be honoured, got: {p.stdout}")
 
 
 def test_stop_hook_inactive_run_is_ignored():

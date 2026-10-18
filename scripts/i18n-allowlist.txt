@@ -20,3 +20,17 @@ tests/test_english_gate.py
 # qa-cli matches the Portuguese file names that Brazilian projects give to test plans
 # and scenario documents. The words are data to match, not untranslated prose.
 plugins/qa-squad/bin/qa-cli :: cenarios\?\|casos\?
+
+# The report generator masks secrets and recognises failure screenshots in the file names that
+# Brazilian projects use; these words are data to match, not untranslated prose.
+plugins/qa-squad/bin/qa_artifact_report.py :: ^(_KEY|\s+flagged) =
+
+# Report language packs and Gherkin vocabularies: the Portuguese words ARE the data. English is
+# built into the code; every other language lives in this one file.
+plugins/qa-squad/bin/templates/i18n.json
+
+# Test fixtures in the story-pack format Brazilian projects use (Portuguese Gherkin keywords).
+tests/fixtures/*
+
+# The scope and report tests assert on the Portuguese story fixtures and the pt-BR report pack.
+tests/test_artifact_report.py

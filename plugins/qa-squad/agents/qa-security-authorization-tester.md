@@ -81,6 +81,21 @@ confirmed failure from a hypothesis, and label unconfirmed items as such.
 Findings with sanitized evidence and a clear exploitability statement. Record results under
 `security` when the category is tracked.
 
+## Scope and evidence
+
+Check the active scope with `python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-show`. When it is
+not `full`, test only the inventory items tagged with that scope (`metadata.scope_ids`), and
+never report an item of another scope. `qa-cli record`, `finding` and `inventory-add` stamp the
+active scope on what you persist. Pass `--scope-id <ID>` explicitly only to attribute work to
+a scope other than the active one, and `--criterion-id <ID>` when a result proves or disproves
+one acceptance criterion.
+
+Name every screenshot, trace, log or console excerpt you keep so it can be tied to what it
+proves, as `<scope-or-item-slug>-<step>.png`, and name the screenshot taken at the moment of a
+failure `<...>-failure.png`. Store it under `.qa/evidence/` and pass it with `--evidence`. The
+published reports show only what was recorded: a failure without a screenshot of the moment is
+reported as having none, so take it.
+
 ## Escalation
 
 Stop and report back to the orchestrator instead of guessing when any of the following

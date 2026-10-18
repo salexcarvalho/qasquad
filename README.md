@@ -13,7 +13,7 @@ AI testing often fails in a predictable way: the agent visits a few screens, fin
 Core capabilities:
 
 - 20 specialized QA agents
-- 27 reusable QA skills
+- 28 reusable QA skills
 - browser-driven testing through Playwright MCP
 - menu/submenu/page/tab/action coverage by profile
 - detection of existing test scenarios, and generation plus execution when there are none
@@ -24,6 +24,9 @@ Core capabilities:
 - persistent project-local `.qa/` state
 - deterministic, versionable evidence package under `docs/qa/` (executions, per-requirement
   acceptance reports, bugs, evidence, final summary)
+- evidence and failure reports published as Artifacts at the end of every run (default ON,
+  `--no-artifact` to opt out)
+- runs scoped to one user story, feature, spec or epic, with pass/fail per acceptance criterion
 - deterministic Stop hook for incomplete active audits
 - secret-write protection for `.env*` during QA runs
 - E2E regression generation
@@ -81,10 +84,12 @@ qasquad/
 │       ├── .claude-plugin/
 │       │   └── plugin.json
 │       ├── agents/          # 20 QA agents
-│       ├── skills/          # 27 QA skills
+│       ├── skills/          # 28 QA skills
 │       ├── hooks/
 │       ├── bin/
-│       │   └── qa-cli
+│       │   ├── qa-cli
+│       │   ├── qa_scope.py             # user stories, scope resolution, settings
+│       │   └── qa_artifact_report.py   # evidence and failure report generator
 │       └── .mcp.json        # Playwright MCP
 ├── docs/
 ├── examples/
@@ -175,7 +180,49 @@ Useful commands:
 /qa-squad:qa-final-report
 /qa-squad:qa-bugs
 /qa-squad:qa-retest
+/qa-squad:qa-artifacts
 ```
+
+Every run, scoped or not, ends with an evidence report and (when there is a failure) a failure
+report, published as Artifacts. See [Evidence and failure artifacts](#evidence-and-failure-artifacts)
+and [Scoped runs](#scoped-runs).
+
+## Evidence and failure artifacts
+
+Every execution of QA Squad (the full audit, any `/qa-squad:qa-test-*`, `qa-test-scenarios`,
+`qa-retest`, the final report) ends by generating and publishing, **by default**:
+
+1. an **evidence report**: verdict, summary, result per acceptance criterion, scenario and
+   item, screenshots, trace and video paths, logs, coverage by category, requirement
+   acceptance and environment;
+2. a **failure report**, only when the scope has a failure or a finding: error, steps to
+   reproduce, the screenshot of the moment, evidence, severity and anchors. A scope without
+   failures gets no failure report; the run says so instead.
+
+Both are self-contained HTML written by `plugins/qa-squad/bin/qa_artifact_report.py` (standard
+library only; Pillow optionally shrinks images) and published with the Claude Code Artifact
+tool. Pages stay under 12 MB by degrading in levels, and say what they left out. Secrets are
+masked before anything is embedded.
+
+Opt out with `--no-artifact` on the skill, `QA_SQUAD_NO_ARTIFACT=1`, or
+`"artifacts": {"publish": false}` in `.qa/config.json`; standalone HTML is then written under
+`docs/qa/executions/<id>/scope-<id>/`. Details: [docs/artifacts-and-scope.md](docs/artifacts-and-scope.md).
+
+## Scoped runs
+
+```text
+/qa-squad:qa-test-scenarios --story US-A01-03
+/qa-squad:qa-test-scenarios --feature youth
+/qa-squad:qa-test-scenarios --spec specs/youth.md
+/qa-squad:qa-full-audit --epic A01
+```
+
+A scope (`story | feature | spec | epic | full`) is stored in `.qa/scope.json`, copied to
+`docs/qa/executions/<id>/scope.json`, and stamped as `scope_ids` on every scenario, result,
+finding and bug. The acceptance criteria of a user story (Gherkin `Given/When/Then`, in English
+or in the languages listed in `templates/i18n.json`, or a bullet list) become executable
+scenarios, and the reports show pass or fail per criterion with its evidence. A story's
+failure never appears in another story's reports.
 
 ## Deterministic coverage
 
@@ -340,6 +387,7 @@ covered.
 | [docs/installation.md](docs/installation.md) | Install, global install, verification |
 | [docs/configuration.md](docs/configuration.md) | `.qa/config.json` reference |
 | [docs/usage.md](docs/usage.md) | Commands and reading coverage |
+| [docs/artifacts-and-scope.md](docs/artifacts-and-scope.md) | Evidence/failure artifacts, scopes, user-story format, settings |
 | [docs/qa-workflow.md](docs/qa-workflow.md) | Phases, evidence, severity |
 | [docs/extending.md](docs/extending.md) | Adding agents, skills and categories |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common problems |
