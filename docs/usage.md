@@ -40,6 +40,7 @@ accessibility and error handling.
 /qa-squad:qa-test-resilience
 /qa-squad:qa-test-performance
 /qa-squad:qa-test-scenarios
+/qa-squad:qa-test-goal
 /qa-squad:qa-generate-e2e
 /qa-squad:qa-gap-analysis
 /qa-squad:qa-coverage-matrix
@@ -51,6 +52,30 @@ accessibility and error handling.
 
 Every `qa-test-*` skill, `qa-full-audit`, `qa-retest` and `qa-final-report` accept the scope
 flags `--story`, `--feature`, `--spec`, `--epic`, `--scope` and the opt-out `--no-artifact`.
+
+## Goal-driven testing and fast mode
+
+`/qa-squad:qa-test-goal` runs natural-language goals ("a user can place an order and sees the
+confirmation") against the real application through the accessibility tree of the Playwright
+MCP, not through pixels or pre-written selectors. Every goal carries its preconditions or seed
+data, a step budget and an explicit oracle (URL, snapshot text or role, network response, plus
+forbidden states) that is frozen before the first click. The verdict is `PASS`, `FAIL` or
+`INCONCLUSIVE`; an exhausted budget or an oracle that cannot be evaluated is `INCONCLUSIVE`,
+never `PASS`. Results go into the `scenarios` category (`INCONCLUSIVE` is recorded as
+`blocked`), failures become findings and bugs, and the evidence and failure Artifacts are
+published as usual.
+
+```text
+/qa-squad:qa-test-goal "a registered user can place an order and sees the confirmation"
+/qa-squad:qa-test-goal --goals goals/checkout.md --runs 3 --story US-A01-03
+/qa-squad:qa-full-audit --fast
+```
+
+A goal that passes its last three runs can be graduated, after you confirm, into a scripted
+Playwright test through `qa-e2e-generator` (also `/qa-squad:qa-generate-e2e --goal <slug>`).
+`/qa-squad:qa-full-audit --fast` runs a goal-driven smoke over the critical flows and claims no
+coverage; the full audit and its specialists are unchanged. Goal runs cost more per execution
+than scripts, so keep stable critical paths scripted.
 
 ## Test scenarios
 

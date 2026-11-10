@@ -84,6 +84,26 @@ coverage gate still applies to the categories the scope touches. With no scope f
 publishing the final Artifacts (the documented variable is `QA_SQUAD_NO_ARTIFACT=1`, or
 `artifacts.publish=false` in `.qa/config.json`); publishing is ON by default.
 
+## Modes
+
+The default is the full audit below. With `--fast` (alias `--smoke`) in the goal, run the
+fast mode instead: a quick goal-driven smoke over the critical flows, not a coverage audit.
+
+1. Apply the scope, as in the full audit, but do not run `qa-cli init`: it arms the coverage
+   Stop gate, which a smoke run cannot satisfy. `qa-test-goal` creates a disarmed state itself
+   (`init` then `finish --force`, only when no state exists) so `execution-finish` works.
+2. Take the critical flows from the goal, from `.qa/inventory/workflows.json` and
+   `features.json`, or from `.qa/project-context.md`; when none exist, run
+   `qa-system-discovery` once, then pick them. Write one goal per flow with an explicit
+   oracle and a small step budget.
+3. Run the `/qa-squad:qa-test-goal --smoke` procedure from the main thread (invoke the skill;
+   it is not an agent and must not be handed to one). Report each goal as PASS, FAIL or
+   INCONCLUSIVE.
+4. Do not run the specialists, `qa-coverage-auditor` or the coverage gate, and do not claim
+   coverage: a fast run proves only that the listed flows work. Say that in the summary and
+   recommend the full audit when anything failed or was inconclusive.
+5. Publish the evidence and failure Artifacts as in the full audit.
+
 ## Required sequence
 
 1. Initialize `.qa/` if it does not exist yet, and apply the scope above.
@@ -134,6 +154,7 @@ navigation per role. The same route exposed to two different roles is two distin
 | resilience | `qa-error-resilience-tester` | `resilience` |
 | performance | `qa-performance-auditor` | `performance` |
 | regression | `qa-e2e-generator` | n/a |
+| fast goal-driven smoke (`--fast` only) | skill `qa-test-goal`, run from the main thread | `scenarios` |
 | independent coverage review | `qa-coverage-auditor` | n/a |
 | reporting | `qa-report-writer` | n/a |
 

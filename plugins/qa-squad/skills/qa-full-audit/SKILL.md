@@ -1,7 +1,7 @@
 ---
 name: qa-full-audit
 description: "Runs a complete, generic, traceable QA audit driven towards the configured coverage target."
-argument-hint: "[--story ID | --feature NAME | --spec PATH | --epic ID | --scope VALUE] [--no-artifact] [audit goal and requirements]"
+argument-hint: "[--story ID | --feature NAME | --spec PATH | --epic ID | --scope VALUE] [--fast] [--no-artifact] [audit goal and requirements]"
 disable-model-invocation: true
 ---
 
@@ -46,6 +46,19 @@ reports keep the current full-scope behavior.
 
 `--no-artifact` opts out of publishing the final Artifacts (also `QA_SQUAD_NO_ARTIFACT=1` or
 `artifacts.publish=false` in `.qa/config.json`). Publishing is ON by default.
+
+## Fast mode
+
+With `--fast` (alias `--smoke`) do not run the sequence below. Run a goal-driven smoke over
+the critical flows instead: apply the scope as above, but do not run `qa-cli init` (it arms the
+coverage Stop gate, which a smoke run cannot satisfy; `qa-test-goal` creates a disarmed state
+itself when `execution-finish` needs one). Take the
+critical flows from the inventory, `.qa/project-context.md` or the requirements, and run
+`/qa-squad:qa-test-goal --smoke` with one goal per flow (explicit oracle, small step budget).
+Report PASS, FAIL or INCONCLUSIVE per goal, claim no coverage, skip the specialists and the
+coverage gate, and recommend the full audit when anything failed or was inconclusive. The
+evidence and failure Artifacts are published as usual. Without `--fast`, the full audit
+below is unchanged.
 
 ## Sequence
 

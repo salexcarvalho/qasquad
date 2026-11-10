@@ -45,6 +45,7 @@ Skills are the invocable entry points. Plugin skills are namespaced, so they are
 | `qa-test-resilience` | Error and recovery behavior | `qa-error-resilience-tester` |
 | `qa-test-performance` | Performance bottlenecks | `qa-performance-auditor` |
 | `qa-test-scenarios` | Detect existing test scenarios, generate when missing, execute | `qa-scenario-tester` |
+| `qa-test-goal` | Natural-language goals with explicit oracles and PASS, FAIL or INCONCLUSIVE verdicts; graduation to scripted E2E | none (main conversation; graduates through `qa-e2e-generator`) |
 
 ## Agent and skill relationship
 
