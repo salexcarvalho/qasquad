@@ -13,8 +13,9 @@ AI testing often fails in a predictable way: the agent visits a few screens, fin
 Core capabilities:
 
 - 20 specialized QA agents
-- 28 reusable QA skills
+- 29 reusable QA skills
 - browser-driven testing through Playwright MCP
+- goal-driven browser testing from natural-language goals, with explicit oracles and a fast smoke mode
 - menu/submenu/page/tab/action coverage by profile
 - detection of existing test scenarios, and generation plus execution when there are none
 - functional, forms, workflow, API and data-integrity testing
@@ -84,7 +85,7 @@ qasquad/
 │       ├── .claude-plugin/
 │       │   └── plugin.json
 │       ├── agents/          # 20 QA agents
-│       ├── skills/          # 28 QA skills
+│       ├── skills/          # 29 QA skills
 │       ├── hooks/
 │       ├── bin/
 │       │   ├── qa-cli
@@ -173,6 +174,7 @@ Useful commands:
 /qa-squad:qa-test-resilience
 /qa-squad:qa-test-performance
 /qa-squad:qa-test-scenarios
+/qa-squad:qa-test-goal
 /qa-squad:qa-test-data-integrity
 /qa-squad:qa-generate-e2e
 /qa-squad:qa-gap-analysis
@@ -282,6 +284,30 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scenario-scan --import
 `scenarios` is a core category and cannot be declared empty, so an audit cannot close until
 the scan has run and every scenario, existing or generated, has a result. The list is
 published with `qa-cli scenario-list --out .qa/reports/test-scenarios.md`.
+
+## Goal-driven testing and fast mode
+
+`/qa-squad:qa-test-goal` runs natural-language goals ("a user can place an order and sees the
+confirmation") against the real application through the accessibility tree of the Playwright
+MCP, not through pixels or pre-written selectors. Every goal carries its preconditions or seed
+data, a step budget and an explicit oracle (URL, snapshot text or role, network response, plus
+forbidden states) that is frozen before the first click. The verdict is `PASS`, `FAIL` or
+`INCONCLUSIVE`; an exhausted budget or an oracle that cannot be evaluated is `INCONCLUSIVE`,
+never `PASS`. Results go into the `scenarios` category (`INCONCLUSIVE` is recorded as
+`blocked`), failures become findings and bugs, and the evidence and failure Artifacts are
+published as usual.
+
+```text
+/qa-squad:qa-test-goal "a registered user can place an order and sees the confirmation"
+/qa-squad:qa-test-goal --goals goals/checkout.md --runs 3 --story US-A01-03
+/qa-squad:qa-full-audit --fast
+```
+
+A goal that passes its last three runs can be graduated, after you confirm, into a scripted
+Playwright test through `qa-e2e-generator` (also `/qa-squad:qa-generate-e2e --goal <slug>`).
+`/qa-squad:qa-full-audit --fast` runs a goal-driven smoke over the critical flows and claims no
+coverage; the full audit and its specialists are unchanged. Goal runs cost more per execution
+than scripts, so keep stable critical paths scripted.
 
 ## Project-local QA state
 
