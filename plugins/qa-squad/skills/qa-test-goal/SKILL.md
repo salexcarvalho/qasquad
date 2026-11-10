@@ -55,9 +55,9 @@ evidence (UI, code, documentation, `.qa/project-context.md`); if it cannot be de
 | `role` | Which persona runs it. Credentials come from `.env`; reference them by variable name only. |
 | `entry` | Start URL, ideally deep-linked past slow setup (an already authenticated state or a seeded record). |
 | `preconditions` | The data and state that must hold before the run, and how to reach it: seed script, fixture, or records the run creates and owns. If the state cannot be established or verified, the goal is `INCONCLUSIVE`, not `PASS`. |
-| `max_steps` | Step budget. Default 20, or 12 with `--smoke`; `--max-steps N` overrides. |
+| `max_steps` | Step budget. Default 20, or 12 with `--smoke`; `--max-steps N` overrides. The initial navigation to `entry` counts as step 1 (see section 2). |
 | `oracle.pass` | Observable facts that must ALL hold at the end: the URL or route, specific text or a role and accessible name in the accessibility snapshot, and, when the goal changes data, a matching network response or a persisted value visible after a reload. |
-| `oracle.forbidden` | States that fail the goal at once if seen: still on the login route, an alert with an error text, a 4xx or 5xx on the goal's request, a duplicate record. |
+| `oracle.forbidden` | States that fail the goal at once if seen: still on the login route, an alert with an error text, an unexpected 4xx or 5xx on the goal's request (list the statuses the goal expects, such as a 404 on a "not found" goal, in `oracle.pass`), a duplicate record. |
 
 An oracle is only valid when its checks are literal and verifiable: exact text, a route
 pattern, a role plus name, an HTTP status. "No error", "page loaded", "looks right" and
@@ -70,40 +70,113 @@ in the goal file:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" inventory-add --category scenarios \
-  --id "scenario:goal:<slug>" --kind goal --label "<goal title>" --profile-id "<role>" \
-  --metadata '{"origin":"goal","max_steps":20,"preconditions":"...","oracle_pass":["..."],"oracle_forbidden":["..."],"goal_file":".qa/goals/<slug>.json"}'
+  --id "scenario:goal:<slug>" --kind goal --label "$GOAL_TITLE" --profile-id "<role>" \
+  --metadata "$META"
 ```
+
+Build `$GOAL_TITLE` and `$META` from the goal file instead of quoting them by hand: accents,
+quotes and newlines in a goal break shell quoting. Use `$GOAL_TITLE` for `inventory-add --label`
+and for `record --scenario` (section 3).
+
+```bash
+goal_meta() { python3 -c 'import json,sys; g=json.load(open(sys.argv[1], encoding="utf-8")); t=g.get("trace") if len(sys.argv)>2 else None; S=lambda x: " ".join(str(v) for v in (x.get("action"),x.get("role"),x.get("name") and "\"%s\"" % x["name"],x.get("value")) if v)+(" (expect: %s)" % x["expect"] if x.get("expect") else ""); steps=[S(x) for x in t] if t else ["navigate "+g["entry"],"Goal: "+g["goal"]]; print(json.dumps({"origin":"goal","max_steps":g["max_steps"],"preconditions":g["preconditions"],"expected":"; ".join(g["oracle"]["pass"]),"steps":steps,"oracle_pass":g["oracle"]["pass"],"oracle_forbidden":g["oracle"]["forbidden"],"goal_file":sys.argv[1]}, ensure_ascii=False))' "$@"; }
+META=$(goal_meta ".qa/goals/<slug>.json")
+GOAL_TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["goal"])' ".qa/goals/<slug>.json")
+```
+
+`bug-report` reads `preconditions` (a string), `steps` (a list of strings, numbered by the
+report) and `expected` (a string) from this metadata. `goal_meta` supplies all three: `expected`
+joins the `oracle.pass` lines with `"; "`, and `steps` holds the entry navigation and the goal
+text before the run. Shell state may not persist between calls, so define `goal_meta` again in
+each call that uses it. After a `FAIL`, refresh `steps` from the executed trace (section 3,
+Record).
 
 `.qa/goals/<slug>.json` holds `goal`, `role`, `entry`, `preconditions`, `max_steps`, `oracle`,
 the latest `trace` (below), a `history` list of `{execution, verdict, steps_used, date}` and
-`graduated` (a test path or `null`). Create or update it with the file tools. It must never
-contain a credential, token or personal data: write `<credential:ROLE>` in place of values.
+`graduated` (a test path or `null`). Create and update it with the file tools (Write, or a
+heredoc); `qa-cli` does not manage it. It must never contain a credential, token or personal
+data: write `<credential:ROLE>` in place of values. Example:
+
+```json
+{
+  "goal": "A registered user can place an order and sees the confirmation",
+  "role": "customer",
+  "entry": "http://localhost:3000/cart",
+  "preconditions": "Seeded customer with one item in the cart; stock available",
+  "max_steps": 20,
+  "oracle": {
+    "pass": [
+      "URL matches /orders/[0-9]+/confirmation",
+      "heading \"Order confirmed\" is present in the snapshot",
+      "POST /api/orders returned 201"
+    ],
+    "forbidden": [
+      "still on /login",
+      "alert with an error text",
+      "an unexpected 4xx or 5xx on POST /api/orders"
+    ]
+  },
+  "trace": [
+    {"n": 1, "action": "navigate", "role": null, "name": null, "value": "http://localhost:3000/cart", "expect": "heading \"Your cart\""},
+    {"n": 2, "action": "click", "role": "button", "name": "Place order", "value": null, "expect": "URL /orders/<id>/confirmation"}
+  ],
+  "history": [
+    {"execution": "exec-20261110T120000Z", "verdict": "PASS", "steps_used": 2, "date": "2026-11-10T12:00:00Z"}
+  ],
+  "graduated": null
+}
+```
 
 ## 2. Execute each goal
 
-Open one execution for the run:
+Preconditions for the run: the Playwright MCP browser must be exclusive to this run. No other
+agent or session may drive the same browser while a goal executes; when several goal runs are
+requested in parallel, serialize them (one browser, one goal at a time).
+
+Open one execution for the run. `execution-finish` (Closing, step 1) fails with "QA state not
+found" unless `.qa/run-state.json` exists, while `execution-start` works without it. But
+`qa-cli init` creates that file as `"status": "active"`, which arms the Stop hook
+(`hooks/validate-qa-coverage.py` blocks the turn until full coverage) and the secret-write
+guard (`hooks/protect-secrets.py`). So create the state only if it is missing, and disarm it at
+once; never touch a state that already exists (it may belong to a running full audit, which
+must stay active):
 
 ```bash
-EXEC_ID=$(python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" execution-start --executor claude --test-framework playwright)
+QA_CLI="${CLAUDE_PLUGIN_ROOT}/bin/qa-cli"
+if [ ! -f .qa/run-state.json ]; then
+  python3 "$QA_CLI" init && python3 "$QA_CLI" finish --force   # state exists, status closed_incomplete: hooks stay inert
+fi
+EXEC_ID=$(python3 "$QA_CLI" execution-start --executor claude --test-framework playwright)
 ```
+
+`finish --force` prints a coverage-validation failure; that is expected and harmless here. This
+is the same sequence for standalone runs and for fast mode (`--smoke`, `qa-full-audit --fast`).
+Inside a full audit the state already exists and is active, so nothing is created or closed.
 
 Drive the browser only with the plugin's Playwright MCP tools (`mcp__plugin_qa-squad_playwright__browser_*`),
 accessibility tree first:
 
-1. `browser_navigate` to `entry`, then `browser_snapshot`. Check the preconditions against
-   what the snapshot shows; if they do not hold, stop with `INCONCLUSIVE`.
+1. `browser_navigate` to `entry`, then `browser_snapshot`. The navigation to `entry` is step 1
+   and counts against `max_steps` (a budget of 12 leaves 11 further actions). Check the
+   preconditions against what the snapshot shows; if they do not hold, stop with
+   `INCONCLUSIVE`.
 2. Pick the next action from the snapshot, by element `ref`, role and accessible name:
    `browser_click`, `browser_type`, `browser_fill_form`, `browser_select_option`,
    `browser_press_key`, `browser_handle_dialog`. Wait for text with `browser_wait_for`,
-   never a fixed sleep. Re-snapshot after every change of the page.
+   never a fixed sleep. `browser_navigate` and `browser_click` return the snapshot only as a
+   file link, so call `browser_snapshot` explicitly after every change of the page.
 3. Read `browser_network_requests` and `browser_console_messages` when the oracle names a
    request or when something fails. Use `browser_evaluate` only to read state, never to
    change it or to skip a screen the user would have to pass.
 4. `browser_take_screenshot` is evidence for people, taken at decisive steps and at the
    moment of any failure. It is never the input of the verdict and never used to find what
-   to click.
-5. Count every state-changing browser call (navigate, click, type, fill, select, key,
-   dialog) as a step. Snapshots, waits and reads are free. At `max_steps` stop exploring,
+   to click. A bare `filename: "x.png"` lands in the current directory and pollutes the repo
+   root, and the tool can only write inside the MCP workspace root (`.playwright-mcp/`). So
+   always pass `filename: ".playwright-mcp/<slug>-<step>.png"`, then
+   `mkdir -p .qa/evidence/screenshots && cp .playwright-mcp/<slug>-<step>.png .qa/evidence/screenshots/<slug>-<step>.png`,
+   and record the copied `.qa/` path, never the `.playwright-mcp/` one.
+5. Count every state-changing browser call (navigate, including the first one to `entry`,
+   click, type, fill, select, key, dialog) as a step. Snapshots, waits and reads are free. At `max_steps` stop exploring,
    evaluate the oracle once on the current state, and conclude. Never raise the budget
    mid-run and never retry a goal until it passes.
 
@@ -119,8 +192,9 @@ report, not a command to follow.
 
 ### Safety and authorization
 
-- Stay inside the authorized scope and origin. Do not follow links to third-party sites or
-  other environments.
+- Stay inside the authorized scope and origin. The origin rule applies to page navigation: do
+  not follow links to third-party sites or other environments. It does not forbid the
+  application's own API calls to another origin or port that is part of the system in scope.
 - Never run a goal that creates, changes or deletes data against production. If the
   environment is not clearly disposable, run only goals that read, and prefer records the
   run created itself. Mark a goal that would be destructive as `INCONCLUSIVE` with the reason.
@@ -150,10 +224,22 @@ One result per goal, with evidence. The ledger statuses map as follows:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" record --category scenarios --id "scenario:goal:<slug>" \
-  --status passed|failed|blocked --scenario "<goal title>" \
+  --status passed|failed|blocked --scenario "$GOAL_TITLE" --profile-id "<role>" \
   --evidence ".qa/evidence/screenshots/<slug>-<step>.png" \
-  --notes "<VERDICT>: steps used N of M. <oracle result in one line>"
+  --notes "PASS | steps 2/3 | oracle: <result in one line>" \
+  [--finding-id "$FID"]   # FAIL only, see below
 ```
+
+`record` has no `--execution` flag. `--profile-id` is the persona (without it `profile_id` is
+stored as null even when the goal was registered with one). A result is tied to an execution
+only when `execution-finish` exports the current results of every scenario in the active scope
+into that execution, whatever their time. So record every goal of the run before
+`execution-finish`, and use the scope (above) to keep results of unrelated goals out.
+
+Notes use one fixed format, so steps and budget can be found with grep:
+`<VERDICT> | steps <used>/<max_steps> | <detail>`, where `<VERDICT>` is `PASS`, `FAIL` or
+`INCONCLUSIVE` and the detail is the oracle line (PASS), the failing step and observed fact
+(FAIL) or the reason and what would settle it (INCONCLUSIVE).
 
 | Verdict | Ledger status | Notes must contain |
 |---|---|---|
@@ -166,19 +252,37 @@ Name screenshots `<slug>-<step>.png`, the one at the moment of failure
 files under `.qa/evidence/logs/`. Add `--criterion-id` when the goal came from an acceptance
 criterion.
 
-For every `FAIL`, record a finding with the `qa-record-finding` pattern, with the step
-trace as the reproduction and the oracle line that was violated as the expected behavior,
-then classify it and promote it to a bug (the same classes as the scenario tester):
+For every `FAIL`, record a finding first (the `qa-record-finding` pattern, `qa-cli finding`), then
+pass its ID to `record` with `--finding-id "$FID"` (above). Put the step trace in
+`--reproduction` and the violated oracle line in `--expected`:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" bug-report --scenario "scenario:goal:<slug>" \
-  --execution "$EXEC_ID" --classification <PRODUCT_DEFECT|TEST_AUTOMATION_FAILURE|ENVIRONMENT_FAILURE|TEST_DATA_FAILURE|UNDETERMINED> \
-  --summary "<short summary>" --observed-fact "<what was actually seen>" \
-  [--hypothesis "<technical hypothesis, never stated as fact>"]
+FID=$(python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" finding \
+  --title "<short title>" --severity <critical|high|medium|low> --category scenarios \
+  --location "<route>" --scenario-id "scenario:goal:<slug>" \
+  --actual "<what was actually seen>" --expected "<the violated oracle line>" \
+  --reproduction "1. navigate <entry>; 2. click button \"Place order\"; ..." \
+  --evidence ".qa/evidence/screenshots/<slug>-failure.png" [--criterion-id <ID>])
 ```
 
-Separate the observed fact from any hypothesis. Use `UNDETERMINED` when evidence is not
-enough. Do not write a bug for `INCONCLUSIVE`; report it as a result that needs a decision.
+Also for every `FAIL`, before `execution-finish`, write the executed `trace` into the goal file
+and re-run `inventory-add`: it upserts by `--id` and replaces the whole item, metadata included,
+so pass every flag again with the same values. The `trace` argument makes `goal_meta` build
+`steps` from the executed step trace, so `bug-report` shows the real reproduction steps:
+
+```bash
+META=$(goal_meta ".qa/goals/<slug>.json" trace)
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" inventory-add --category scenarios \
+  --id "scenario:goal:<slug>" --kind goal --label "$GOAL_TITLE" --profile-id "<role>" \
+  --metadata "$META"
+```
+
+`finding` prints the finding ID (`QA-<timestamp>-<hash>`), which is separate from the bug ID
+(`BUG-...`) that `bug-report` creates in Closing step 2. `bug-report` has no flag to link
+them. The link is the scenario: `record --finding-id` stores the finding on the scenario
+result, and `bug-report` stores the bug ID on that same result. The bug itself is created in
+Closing, after `execution-finish`; it is classified there with the same classes as the
+scenario tester.
 
 Update `.qa/goals/<slug>.json`: store the trace (replace it only after a `PASS`, so the
 stored trace is always one that satisfied the oracle) and append the run to `history`.
@@ -186,9 +290,14 @@ stored trace is always one that satisfied the oracle) and append the run to `his
 ### Repeats and stability
 
 With `--runs N`, run each goal N times in fresh sessions (`browser_close`, then restore the
-preconditions), and report every verdict. Disagreement between runs of the same goal on the
-same state is a stability problem: report the goal as unstable and do not offer to graduate
-it. Cap `--runs` at 5; the cost of a goal run is real.
+preconditions), and report every verdict. Restoring means re-seeding the data the goal needs
+and, for an anonymous goal or one with no stored state, starting from a clean browser context:
+after `browser_close` the next `browser_navigate` opens a new one; if the MCP is configured with
+a persistent profile, clear its cookies and storage first. Disagreement between
+runs of the same goal on the same state is a stability problem: report the goal as unstable
+and do not offer to graduate it. With `N=1` (the default) there is nothing to compare: make no
+stability claim and run no disagreement check; stability is only judged from `history` across
+executions (section 4). Cap `--runs` at 5; the cost of a goal run is real.
 
 ## 4. Graduation: offer to turn a stable goal into a scripted test
 
@@ -222,13 +331,43 @@ publishing only when `$ARGUMENTS` contains `--no-artifact` (or the project sets
 `QA_SQUAD_NO_ARTIFACT=1` / `artifacts.publish=false`); the generator then writes standalone
 HTML into `docs/qa/` instead.
 
-1. Close the execution you opened in step 2:
+Order matters: record every goal, then `execution-finish`, then `bug-report` for each `FAIL`,
+then generate the reports and publish. `bug-report` fails with "no exported result in
+execution ... Run 'qa-cli execution-finish' first" until the execution is finished.
+
+1. Close the execution you opened in step 2 (this needs `.qa/run-state.json`, which section 2
+   already ensured without arming the Stop hook):
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" execution-finish --execution "$EXEC_ID"
    ```
 
-2. Generate the reports for this scope and lane. Use the session scratchpad directory from
+2. For each `FAIL`, classify it and promote it to a bug. `bug-report` accepts only
+   `--scenario`, `--execution`, `--classification`, `--summary`, `--observed-fact`,
+   `--hypothesis`, `--severity` and `--id`; there is no `--steps` or `--expected` flag:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" bug-report --scenario "scenario:goal:<slug>" \
+     --execution "$EXEC_ID" --severity <critical|high|medium|low> \
+     --classification <PRODUCT_DEFECT|TEST_AUTOMATION_FAILURE|ENVIRONMENT_FAILURE|TEST_DATA_FAILURE|UNDETERMINED|BLOCKED> \
+     --summary "<short summary>" \
+     --observed-fact "Steps: 1. navigate <entry>; 2. click ...; Violated oracle: <exact oracle line>; Observed: <what was actually seen>" \
+     [--hypothesis "<technical hypothesis, never stated as fact>"]
+   ```
+
+   Fold the step trace and the violated oracle line into `--observed-fact`, the only free-text
+   flag for what happened, and always pass `--severity` (without it the bug shows
+   `NOT_AVAILABLE`). The report's "Steps to reproduce" and "Expected result" sections come from
+   the scenario's inventory metadata (`steps` list, `expected` string), not from flags. Both are
+   filled by default: `expected` is the joined `oracle.pass` lines and `steps` is the executed
+   trace once the `FAIL` refresh in section 3 (Record) ran; without that refresh `steps` only
+   shows the entry navigation and the goal text. "Impact" always stays `NOT_AVAILABLE`; no
+   flag sets it. Separate the observed fact from any hypothesis. Use
+   `UNDETERMINED` when evidence is not enough. `BLOCKED` is in the CLI list for completeness, but this skill
+   never uses it: an `INCONCLUSIVE` goal gets no bug report; report it as a result that needs
+   a decision.
+
+3. Generate the reports for this scope and lane. Use the session scratchpad directory from
    your system prompt as `--out-dir` (omit it when there is none). Add `--no-artifact` when
    `$ARGUMENTS` has it:
 
@@ -237,13 +376,14 @@ HTML into `docs/qa/` instead.
      --category scenarios --artifact --out-dir "<scratchpad>/qa-artifacts" --json
    ```
 
-3. Call the Artifact tool once per entry of `publish` in the printed JSON, with its
-   `file_path`, `icon` and `description` exactly as listed. Republish the same `file_path` to
+4. Call the Artifact tool once per entry of `publish` in the printed JSON, with its
+   `file_path`, `icon` and `description` exactly as listed. The generated HTML is pre-built
+   and is published as-is: no design pass and no rewrite. Republish the same `file_path` to
    update an artifact. When `publish` has no failure entry, do not invent one: tell the user
    the scope has no failures. Give the user every Artifact link.
-4. Report to the user, per goal: verdict, steps used of budget, and the oracle line that
+5. Report to the user, per goal: verdict, steps used of budget, and the oracle line that
    decided it, then the totals of `PASS`, `FAIL` and `INCONCLUSIVE`, which goals were
    offered for graduation, and which were graduated.
-5. Run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-clear` if you set a scope in this run.
+6. Run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" scope-clear` if you set a scope in this run.
 
 Credit: the goal-driven approach is inspired by the MIT-licensed `agentic-browser-testing` skill by kindlmann. The text of this skill is original.

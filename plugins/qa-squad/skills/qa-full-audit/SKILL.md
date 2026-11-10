@@ -51,7 +51,8 @@ reports keep the current full-scope behavior.
 
 With `--fast` (alias `--smoke`) do not run the sequence below. Run a goal-driven smoke over
 the critical flows instead: apply the scope as above, but do not run `qa-cli init` (it arms the
-coverage Stop gate, which a smoke run cannot satisfy; `.qa/` is created on demand). Take the
+coverage Stop gate, which a smoke run cannot satisfy; `qa-test-goal` creates a disarmed state
+itself when `execution-finish` needs one). Take the
 critical flows from the inventory, `.qa/project-context.md` or the requirements, and run
 `/qa-squad:qa-test-goal --smoke` with one goal per flow (explicit oracle, small step budget).
 Report PASS, FAIL or INCONCLUSIVE per goal, claim no coverage, skip the specialists and the

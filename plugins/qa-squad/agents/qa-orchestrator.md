@@ -90,7 +90,8 @@ The default is the full audit below. With `--fast` (alias `--smoke`) in the goal
 fast mode instead: a quick goal-driven smoke over the critical flows, not a coverage audit.
 
 1. Apply the scope, as in the full audit, but do not run `qa-cli init`: it arms the coverage
-   Stop gate, which a smoke run cannot satisfy. `.qa/` is created on demand.
+   Stop gate, which a smoke run cannot satisfy. `qa-test-goal` creates a disarmed state itself
+   (`init` then `finish --force`, only when no state exists) so `execution-finish` works.
 2. Take the critical flows from the goal, from `.qa/inventory/workflows.json` and
    `features.json`, or from `.qa/project-context.md`; when none exist, run
    `qa-system-discovery` once, then pick them. Write one goal per flow with an explicit
