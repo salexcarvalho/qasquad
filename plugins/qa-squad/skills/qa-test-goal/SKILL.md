@@ -79,12 +79,17 @@ quotes and newlines in a goal break shell quoting. Use `$GOAL_TITLE` for `invent
 and for `record --scenario` (section 3).
 
 ```bash
-META=$(python3 -c 'import json,sys; g=json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"origin":"goal","max_steps":g["max_steps"],"preconditions":g["preconditions"],"oracle_pass":g["oracle"]["pass"],"oracle_forbidden":g["oracle"]["forbidden"],"goal_file":sys.argv[1]}, ensure_ascii=False))' ".qa/goals/<slug>.json")
+goal_meta() { python3 -c 'import json,sys; g=json.load(open(sys.argv[1], encoding="utf-8")); t=g.get("trace") if len(sys.argv)>2 else None; S=lambda x: " ".join(str(v) for v in (x.get("action"),x.get("role"),x.get("name") and "\"%s\"" % x["name"],x.get("value")) if v)+(" (expect: %s)" % x["expect"] if x.get("expect") else ""); steps=[S(x) for x in t] if t else ["navigate "+g["entry"],"Goal: "+g["goal"]]; print(json.dumps({"origin":"goal","max_steps":g["max_steps"],"preconditions":g["preconditions"],"expected":"; ".join(g["oracle"]["pass"]),"steps":steps,"oracle_pass":g["oracle"]["pass"],"oracle_forbidden":g["oracle"]["forbidden"],"goal_file":sys.argv[1]}, ensure_ascii=False))' "$@"; }
+META=$(goal_meta ".qa/goals/<slug>.json")
 GOAL_TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["goal"])' ".qa/goals/<slug>.json")
 ```
 
-`bug-report` reads `preconditions`, `steps` (a list) and `expected` (a string) from this
-metadata; the `META` above supplies `preconditions` only (see Closing, step 2).
+`bug-report` reads `preconditions` (a string), `steps` (a list of strings, numbered by the
+report) and `expected` (a string) from this metadata. `goal_meta` supplies all three: `expected`
+joins the `oracle.pass` lines with `"; "`, and `steps` holds the entry navigation and the goal
+text before the run. Shell state may not persist between calls, so define `goal_meta` again in
+each call that uses it. After a `FAIL`, refresh `steps` from the executed trace (section 3,
+Record).
 
 `.qa/goals/<slug>.json` holds `goal`, `role`, `entry`, `preconditions`, `max_steps`, `oracle`,
 the latest `trace` (below), a `history` list of `{execution, verdict, steps_used, date}` and
@@ -260,6 +265,18 @@ FID=$(python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" finding \
   --evidence ".qa/evidence/screenshots/<slug>-failure.png" [--criterion-id <ID>])
 ```
 
+Also for every `FAIL`, before `execution-finish`, write the executed `trace` into the goal file
+and re-run `inventory-add`: it upserts by `--id` and replaces the whole item, metadata included,
+so pass every flag again with the same values. The `trace` argument makes `goal_meta` build
+`steps` from the executed step trace, so `bug-report` shows the real reproduction steps:
+
+```bash
+META=$(goal_meta ".qa/goals/<slug>.json" trace)
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa-cli" inventory-add --category scenarios \
+  --id "scenario:goal:<slug>" --kind goal --label "$GOAL_TITLE" --profile-id "<role>" \
+  --metadata "$META"
+```
+
 `finding` prints the finding ID (`QA-<timestamp>-<hash>`), which is separate from the bug ID
 (`BUG-...`) that `bug-report` creates in Closing step 2. `bug-report` has no flag to link
 them. The link is the scenario: `record --finding-id` stores the finding on the scenario
@@ -341,10 +358,11 @@ execution ... Run 'qa-cli execution-finish' first" until the execution is finish
    Fold the step trace and the violated oracle line into `--observed-fact`, the only free-text
    flag for what happened, and always pass `--severity` (without it the bug shows
    `NOT_AVAILABLE`). The report's "Steps to reproduce" and "Expected result" sections come from
-   the scenario's inventory metadata (`steps` list, `expected` string), not from flags, so they
-   stay `NOT_AVAILABLE` unless you also put `"expected"` (the joined `oracle.pass` lines) and
-   `"steps"` into the `inventory-add --metadata` of the goal. "Impact" always stays
-   `NOT_AVAILABLE`; no flag sets it. Separate the observed fact from any hypothesis. Use
+   the scenario's inventory metadata (`steps` list, `expected` string), not from flags. Both are
+   filled by default: `expected` is the joined `oracle.pass` lines and `steps` is the executed
+   trace once the `FAIL` refresh in section 3 (Record) ran; without that refresh `steps` only
+   shows the entry navigation and the goal text. "Impact" always stays `NOT_AVAILABLE`; no
+   flag sets it. Separate the observed fact from any hypothesis. Use
    `UNDETERMINED` when evidence is not enough. `BLOCKED` is in the CLI list for completeness, but this skill
    never uses it: an `INCONCLUSIVE` goal gets no bug report; report it as a result that needs
    a decision.
