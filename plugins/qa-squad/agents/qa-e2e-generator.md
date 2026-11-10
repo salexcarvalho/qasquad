@@ -69,6 +69,14 @@ Start from the `scenarios` inventory: scenarios that already ran and passed are 
 specification of the flows to protect. Do not write a second test for a flow that an
 existing E2E scenario already covers.
 
+Graduated goals: when the task names a goal from `/qa-squad:qa-test-goal` (a file under
+`.qa/goals/`), that file is the specification. Turn its stored `trace` into steps with
+role and accessible-name locators (`getByRole`, `getByLabel`), its `preconditions` into
+fixtures that create and remove their own data, and every `oracle` check into a web-first
+assertion, forbidden states included as negative assertions. Read credentials from the
+environment, never from the goal file. Run the test once and report the path and the
+result; do not mark anything as graduated yourself.
+
 Cover authentication, critical navigation, essential CRUD, workflows, roles and permissions,
 and the critical and high severity regressions where appropriate.
 

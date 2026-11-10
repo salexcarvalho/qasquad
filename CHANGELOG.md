@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented here.
 
+## [0.6.0] - 2026-11-10
+
+### Added
+- `qa-test-goal` skill (`/qa-squad:qa-test-goal`): goal-driven browser testing. Each natural-language
+  goal gets preconditions or seed data, a step budget and an explicit oracle (URL, accessibility
+  snapshot, network response, forbidden states) frozen before exploration; the browser is driven
+  snapshot-first through the Playwright MCP. Verdicts are `PASS`, `FAIL` and `INCONCLUSIVE`
+  (budget exhausted or oracle undetermined is never `PASS`), recorded in the `scenarios` category
+  (`INCONCLUSIVE` as `blocked`), with findings, bug reports, step traces under `.qa/goals/`, scope
+  flags, and the default evidence and failure Artifacts.
+- Graduation: a goal with three consecutive passing runs is offered, with user confirmation, to
+  `qa-e2e-generator` (also `/qa-squad:qa-generate-e2e --goal <slug>`), which turns the stored
+  trace and oracle into a scripted Playwright test.
+- Fast mode: `/qa-squad:qa-full-audit --fast` and `qa-orchestrator` run a goal-driven smoke over the
+  critical flows through `qa-test-goal`, without the coverage gate and without claiming
+  coverage. The full audit is unchanged.
+- Credit: the goal-driven approach is inspired by the MIT-licensed `agentic-browser-testing` skill by kindlmann; the text is original.
+
 ## [0.5.0] - 2026-10-11
 
 ### Added
