@@ -4,10 +4,12 @@
 Everything runs on fixtures: no application, no browser, no network. Uses explicit failure
 reporting rather than bare `assert`, so the suite keeps working under `python3 -O`.
 """
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -580,6 +582,292 @@ def test_example_writer_builds_a_failing_and_a_clean_scope():
         files = sorted(x.name for x in (Path(d) / "ex" / "artifacts").glob("*.html"))
         check(files == ["qa-evidence-US-DEMO-01.html", "qa-evidence-US-DEMO-02.html", "qa-failures-US-DEMO-01.html"],
               f"example files: {files}")
+
+
+# ---------------------------------------------------------------- goal evidence report
+
+FAKE_WEBM = b"\x1a\x45\xdf\xa3" + b"fake webm payload" * 40
+CHROME_GAP = "no Chrome, Chromium or Edge found"
+
+
+def goal_project(tmp, with_video=True, video_bytes=FAKE_WEBM):
+    """A project with two finished goals (PASS with 3 steps, FAIL with 2) built through qa-cli."""
+    root = Path(tmp)
+    cli(root, "init", "--goal", "test")
+    shots, goals = root / ".qa" / "evidence" / "screenshots", root / ".qa" / "goals"
+    vids = root / ".qa" / "evidence" / "videos"
+    for d in (shots, goals, vids):
+        d.mkdir(parents=True, exist_ok=True)
+    exec_id = cli(root, "execution-start", "--executor", "qa-squad qa-test-goal / claude-sonnet-5-5",
+                  "--base-url", "https://hml.example.test/", "--environment", "environment=Staging",
+                  "--environment", "version=v2.8.1").stdout.strip()
+    specs = [("login-ok", "passed", 3, "A registered user can sign in and sees the dashboard"),
+             ("export-csv", "failed", 2, "An agent can export the filtered list as CSV")]
+    for slug, status, count, title in specs:
+        trace, args = [], []
+        for n in range(1, count + 1):
+            png = shots / f"{slug}-{n}.png"
+            png.write_bytes(gen._png(640, 360, n + len(slug)))
+            args += ["--evidence", png.relative_to(root).as_posix()]
+            trace.append({"n": n, "action": "click", "role": "button", "name": f"Action {n}", "value": None,
+                          "expect": f"state {n}", "checked": f"Page state {n}", "time": f"2026-11-12T14:02:{10 + n:02d}Z",
+                          "status": "failed" if status == "failed" and n == count else "ok",
+                          "screenshot": png.relative_to(root).as_posix()})
+        run = {"execution": exec_id, "started_at": "2026-11-12T14:02:11Z", "finished_at": "2026-11-12T14:02:53Z",
+               "environment": {"viewport": "1280x720"}, "trace": trace}
+        if with_video:
+            vid = vids / f"{slug}.webm"
+            vid.write_bytes(video_bytes)
+            args += ["--evidence", vid.relative_to(root).as_posix()]
+            run["video"] = {"path": vid.relative_to(root).as_posix(), "duration_s": 42.0}
+        goal = {"goal": title, "role": "agent", "entry": "https://hml.example.test/", "preconditions": "Seeded user",
+                "max_steps": 10, "oracle": {"pass": ["URL matches /dashboard"], "forbidden": ["still on /login"]},
+                "trace": trace, "last_run": run}
+        extra = []
+        if status == "failed":
+            goal["azure_work_item"] = 4321
+            run.update({"observed": "Error page 500. Authorization: Bearer abcdefghijklmnop12345678",
+                        "console": ["POST /api/export 500"],
+                        "network": [{"method": "POST", "url": "/api/export?token=zzzzzzzzzz", "status": 500, "ms": 1842}],
+                        "oracle_results": {"pass": [{"state": "no", "evidence": "step 2"}],
+                                           "forbidden": [{"state": "no", "evidence": "step 2"}]}})
+            fid = cli(root, "finding", "--title", "Export fails", "--severity", "high", "--category", "scenarios",
+                      "--location", "/export", "--scenario-id", f"scenario:goal:{slug}", "--actual", "500",
+                      "--expected", "download", "--reproduction", "1. click").stdout.strip()
+            extra = ["--finding-id", fid]
+        (goals / f"{slug}.json").write_text(json.dumps(goal), encoding="utf-8")
+        cli(root, "inventory-add", "--category", "scenarios", "--id", f"scenario:goal:{slug}", "--kind", "goal",
+            "--label", title, "--profile-id", "agent", "--metadata",
+            json.dumps({"origin": "goal", "expected": "URL matches /dashboard", "steps": ["a", "b"]}))
+        cli(root, "record", "--category", "scenarios", "--id", f"scenario:goal:{slug}", "--status", status,
+            "--scenario", title, "--profile-id", "agent", "--notes", f"{status.upper()} | steps {count}/10 | detail",
+            *args, *extra)
+    cli(root, "execution-finish", "--execution", exec_id)
+    cli(root, "bug-report", "--scenario", "scenario:goal:export-csv", "--execution", exec_id, "--severity", "high",
+        "--classification", "PRODUCT_DEFECT", "--summary", "Export returns 500", "--observed-fact", "Observed: 500")
+    return exec_id
+
+
+def goal_html(root, exec_id):
+    return read(Path(root) / "docs" / "qa" / "executions" / exec_id / "scope-full" / gen.GOAL_REPORT_HTML)
+
+
+def test_goal_report_has_cover_summary_goals_steps_and_annexes():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        report(d, "--execution", exec_id, "--goal-report")
+        text = goal_html(d, exec_id)
+        check(text.lower().startswith("<!doctype html>"), "standalone document")
+        check("<script" not in text.lower() and "<link" not in text.lower(), "no scripts or links")
+        for needle in ("Test Evidence Report", "https://hml.example.test/", "Staging", "v2.8.1",
+                       "qa-squad qa-test-goal / claude-sonnet-5-5", exec_id, "1 of 2 goals passed"):
+            check(needle in text, f"cover and summary carry {needle!r}")
+        check(text.count('id="g-1"') == 1 and text.count('id="g-2"') == 1, "one sheet per goal")
+        check("PASS" in text and "FAIL" in text and "INCONCLUSIVE" in text, "verdict codes, never colour only")
+        check(text.count('<li class="step') == 5, "one timeline entry per step (3 + 2)")
+        check(text.count('<figure class="shot') == 5, "one screenshot per step")
+        check("st-bad" in text and "Expected" in text and "Observed" in text, "FAIL shows expected and observed")
+        check("POST" in text and "/api/export" in text, "network summary")
+        check("token=***" in text and "zzzzzzzzzz" not in text and not gen.secrets_leaked(text), "secrets masked")
+        check("BUG-" in text and "BUG-REPORT.md" in text and "4321" in text, "bug link, local file and work item")
+        check("QA responsible" in text and "Contract inspector" in text and text.count("Signature") == 2, "two signatories")
+        check("size:A4" in text and "counter(pages)" in text and "@page :first" in text, "A4 page rules and page counter")
+        check("Annex A" in text and "SHA-256" in text and "Annex B" in text and "1280x720" in text, "annexes")
+        ids = set(re.findall(r'id="([^"]+)"', text))
+        check(all(h in ids for h in re.findall(r'href="#([^"]+)"', text)), "every anchor has a target")
+
+
+def test_goal_report_references_video_by_relative_path_and_hashes_files():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        report(d, "--execution", exec_id, "--goal-report")
+        text = goal_html(d, exec_id)
+        srcs = re.findall(r'<video[^>]*\ssrc="([^"]+)"', text)
+        check(len(srcs) == 2 and all(s.endswith(".webm") and not s.startswith(("http", "/", "data:")) for s in srcs),
+              f"relative video sources: {srcs}")
+        check(re.search(r'<video[^>]*poster="data:image/', text), "poster is the first screenshot")
+        digest = hashlib.sha256(FAKE_WEBM).hexdigest()
+        check(digest in text, "video SHA-256 on the page")
+        sums = (Path(d) / "docs" / "qa" / "executions" / exec_id / "scope-full" / gen.SHA_SUMS_NAME).read_text()
+        check(sums.count(".png") == 5 and sums.count(".webm") == 2 and gen.GOAL_REPORT_HTML in sums,
+              "SHA256SUMS covers screenshots, videos and the report")
+        p = subprocess.run(["sha256sum", "-c", gen.SHA_SUMS_NAME], cwd=Path(d) / "docs" / "qa" / "executions" / exec_id / "scope-full",
+                           text=True, capture_output=True) if shutil.which("sha256sum") else None
+        check(p is None or p.returncode == 0, f"sha256sum -c: {p and p.stdout}{p and p.stderr}")
+
+
+def test_goal_report_pt_br_labels():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        report(d, "--execution", exec_id, "--goal-report", "--lang", "pt-BR")
+        text = goal_html(d, exec_id)
+        for needle in ("Relatório de Evidências de Teste", "Resumo executivo", "1 de 2 objetivos aprovados",
+                       "Esperado", "Obtido", "Responsável QA", "Fiscal / gestor do contrato", "Assinatura",
+                       "Passo a passo com evidências", "Aprovado", "Reprovado"):
+            check(needle in text, f"pt-BR label {needle!r}")
+        check(text.count("Página") >= 1 and "counter(pages)" in text, "page counter label from i18n")
+
+
+def test_goal_report_pt_br_has_no_english_scope_text():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        out = Path(d) / "art"
+        report(d, "--execution", exec_id, "--goal-report", "--lang", "pt-BR", "--artifact", "--out-dir", str(out))
+        text = goal_html(d, exec_id)
+        plan = " ".join(e.get("description", "") for e in json.loads(
+            (out / "artifact-plan.json").read_text(encoding="utf-8"))["publish"])
+        for blob, name in ((text, "report"), (plan, "plan description")):
+            for leak in ("the full scope", "Full audit"):
+                check(leak not in blob, f"no English {leak!r} in pt-BR goal {name}")
+        check("Auditoria completa" in text, "scope title localized on the cover")
+        check("todo o escopo" in plan, "plan description localized")
+        report(d, "--execution", exec_id, "--goal-report", "--lang", "en", "--artifact", "--out-dir", str(out))
+        check("Full audit" in goal_html(d, exec_id), "English scope title kept for en")
+
+
+def test_goal_artifact_lists_videos_as_files_and_passes_the_contract():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        out = Path(d) / "art"
+        report(d, "--execution", exec_id, "--goal-report", "--artifact", "--out-dir", str(out))
+        plan = json.loads((out / "artifact-plan.json").read_text())
+        entry = next(e for e in plan["publish"] if e["kind"] == "goal-evidence")
+        check(sorted(entry["files"]) == ["videos/export-csv.webm", "videos/login-ok.webm"], f"files map: {entry['files']}")
+        check(all(Path(v).is_file() for v in entry["files"].values()), "sources exist")
+        text = read(entry["file_path"])
+        check(not entry["contract"], f"contract violations: {entry['contract']}")
+        check(not gen.check_artifact_html(text, allowed_files=set(entry["files"])), "contract holds with the files map")
+        check('src="videos/login-ok.webm"' in text, "published relative path in the page")
+        check(re.search(r"<title>Goal Evidence</title>", text), "two-word title")
+        problems = gen.check_artifact_html(text)
+        check(any("video[src]" in x for x in problems), "unlisted video is rejected")
+        # an artifact plan written by the scope reports keeps its entries
+        report(d, "--execution", exec_id, "--artifact", "--out-dir", str(out), "--category", "scenarios")
+        report(d, "--execution", exec_id, "--goal-report", "--artifact", "--out-dir", str(out))
+        kinds = [e["kind"] for e in json.loads((out / "artifact-plan.json").read_text())["publish"]]
+        check(kinds.count("goal-evidence") == 1 and "evidence" in kinds, f"plan merge: {kinds}")
+
+
+def test_contract_checker_video_rules():
+    base = build_pages_good()
+    listed = base.replace("<main", '<video controls src="videos/a.webm"></video><main', 1)
+    check(not gen.check_artifact_html(listed, allowed_files={"videos/a.webm"}), "listed relative video accepted")
+    check(gen.check_artifact_html(listed), "unlisted video rejected")
+    for bad in ("https://example.test/a.webm", "//example.test/a.webm", "videos/a.exe", "../a.webm"):
+        text = base.replace("<main", f'<video controls src="{bad}"></video><main', 1)
+        check(gen.check_artifact_html(text, allowed_files={"videos/a.webm"}), f"{bad} rejected")
+    check(gen.check_artifact_html(base.replace("<main", '<img src="videos/a.webm"><main', 1), allowed_files={"videos/a.webm"}),
+          "only <video src> may name a published file")
+
+
+def test_large_video_is_listed_not_embedded():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d, video_bytes=b"\x1a\x45\xdf\xa3" + b"0" * 5000)
+        old = gen.VIDEO_PUBLISH_MAX
+        gen.VIDEO_PUBLISH_MAX = 1000
+        try:
+            res = gen.generate_goal_report(Path(d), exec_id, "current", None, artifact=True, out_dir=Path(d) / "art",
+                                           budget=gen.BUDGET_BYTES, lang="en")
+        finally:
+            gen.VIDEO_PUBLISH_MAX = old
+        entry = res["publish"][0]
+        check(entry["files"] == {}, "no video is published over the limit")
+        check(len(entry["videos_not_published"]) == 2 and all(v["sha256"] for v in entry["videos_not_published"]),
+              "skipped videos are listed with their hash")
+        text = read(entry["file_path"])
+        check("<video" not in text and "not published" in text.lower(), "page says the video is not published")
+        check("login-ok.webm" in text and not entry["contract"], f"filename stays on the page: {entry['contract']}")
+        check(all(f["bytes"] <= gen.BUDGET_BYTES for f in res["files"]), "within the 12 MB budget")
+        standalone = goal_html(d, exec_id)
+        check("<video" in standalone, "the standalone report still references the video")
+
+
+def test_goal_report_budget_degrades_images_not_the_page_structure():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        res = gen.generate_goal_report(Path(d), exec_id, "current", None, artifact=True, out_dir=Path(d) / "art",
+                                       budget=30_000, lang="en")
+        entry = res["publish"][0]
+        check(entry["level"] > 0 and entry["omitted"], "a small budget drops step images and lists them")
+        text = read(entry["file_path"])
+        check(text.count('<li class="step') == 5, "every step stays on the page")
+
+
+def test_goal_report_without_a_video_or_goal_file_still_renders():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d, with_video=False)
+        shutil.rmtree(Path(d) / ".qa" / "goals")
+        report(d, "--execution", exec_id, "--goal-report")
+        text = goal_html(d, exec_id)
+        check("No video was recorded" in text and "<video" not in text, "missing video is said, not hidden")
+        check(text.count('id="g-') >= 2, "goals come from the manifest alone")
+
+
+def test_tracker_reference_is_validated():
+    check(gen.tracker_ref(4321, "") == {"id": "4321", "url": ""}, "numeric id")
+    check(gen.tracker_ref("javascript:alert(1)", "") is None, "script URL ignored")
+    check(gen.tracker_ref("http://insecure.test/x", "") is None, "plain http ignored")
+    check(gen.tracker_ref({"id": "7", "url": "https://dev.azure.test/o/p/_workitems/edit/7"}, "")["url"].startswith("https://"),
+          "https URL kept")
+    check(gen.tracker_ref("12", "https://dev.azure.test/o/p/_workitems/edit/{id}")["url"].endswith("/edit/12"),
+          "config template builds the URL")
+    check(gen.tracker_ref("https://dev.azure.test/o/p/_workitems/edit/99", "")["id"] == "99", "id read from the URL")
+
+
+def test_pdf_is_skipped_with_one_line_when_no_chrome_exists():
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        empty = Path(d) / "emptybin"
+        empty.mkdir()
+        env = {"PATH": str(empty), "HOME": str(empty), "CHROME_BIN": "", "PLAYWRIGHT_BROWSERS_PATH": "", "LOCALAPPDATA": ""}
+        check(gen.find_chrome(env) is None, "no browser found")
+        res = gen.pdf_from_html(Path(d) / "x.html", Path(d) / "x.pdf", env=env)
+        check(res["status"] == "skipped" and CHROME_GAP in res["reason"], f"skip reason: {res}")
+        p = subprocess.run([sys.executable, str(GEN), "--root", d, "--execution", exec_id, "--goal-report", "--pdf"],
+                           env=env_for(d, env), text=True, capture_output=True)
+        check(p.returncode == 0, f"exit 0 without Chrome: {p.stdout}{p.stderr}")
+        check(p.stderr.count("PDF skipped") == 1 and CHROME_GAP in p.stderr, f"one clear line: {p.stderr!r}")
+        scope = Path(d) / "docs" / "qa" / "executions" / exec_id / "scope-full"
+        check((scope / gen.GOAL_REPORT_HTML).exists() and not (scope / gen.GOAL_REPORT_PDF).exists(), "HTML written, no PDF")
+        check(gen.GOAL_REPORT_PDF not in (scope / gen.SHA_SUMS_NAME).read_text(), "no PDF in SHA256SUMS")
+
+
+def test_chrome_discovery_order():
+    with tempfile.TemporaryDirectory() as d:
+        fake = Path(d) / "fakechrome"
+        fake.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake.chmod(0o755)
+        check(gen.find_chrome({"CHROME_BIN": str(fake), "PATH": ""}) == str(fake), "$CHROME_BIN wins")
+        check(gen.find_chrome({"CHROME_BIN": str(Path(d) / "missing"), "PATH": ""}) is None, "a bad $CHROME_BIN is not silently replaced")
+        cache = Path(d) / "pw" / "chromium-1/chrome-linux64"
+        cache.mkdir(parents=True)
+        (cache / "chrome").write_text("x", encoding="utf-8")
+        check(gen.find_chrome({"PATH": "", "HOME": d, "PLAYWRIGHT_BROWSERS_PATH": str(Path(d) / "pw")}) == str(cache / "chrome"),
+              "Playwright cache is searched")
+
+
+def test_pdf_flag_needs_goal_report():
+    p = subprocess.run([sys.executable, str(GEN), "--pdf"], text=True, capture_output=True)
+    check(p.returncode != 0 and "--goal-report" in p.stderr, "usage error")
+
+
+def test_real_pdf_is_a4_with_the_report_text():
+    if not gen.find_chrome():
+        print("    (no Chrome found: real PDF check skipped)")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        exec_id = goal_project(d)
+        p = report(d, "--execution", exec_id, "--goal-report", "--pdf", "--lang", "pt-BR")
+        scope = Path(d) / "docs" / "qa" / "executions" / exec_id / "scope-full"
+        pdf = scope / gen.GOAL_REPORT_PDF
+        check(pdf.is_file() and pdf.read_bytes()[:5] == b"%PDF-", f"PDF written: {p.stdout}{p.stderr}")
+        raw = pdf.read_bytes()
+        box = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*\]", raw)
+        check(box and abs(float(box.group(1)) - 595) < 2 and abs(float(box.group(2)) - 842) < 2, f"A4 MediaBox: {box and box.groups()}")
+        check(gen.GOAL_REPORT_PDF in (scope / gen.SHA_SUMS_NAME).read_text(), "PDF in SHA256SUMS")
+        if shutil.which("pdftotext"):
+            txt = subprocess.run(["pdftotext", str(pdf), "-"], text=True, capture_output=True).stdout
+            check("Página 2 de" in txt and "Relatório de Evidências de Teste" in txt, "page X of Y footer and cover text")
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

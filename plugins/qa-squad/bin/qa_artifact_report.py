@@ -20,6 +20,14 @@ Two output modes:
                 `docs/qa/executions/<execution>/scope-<id>/`. This is the default when
                 neither flag is given.
 
+A third kind, `--goal-report`, renders the GOAL EVIDENCE report of `/qa-test-goal`: cover, executive
+summary, per goal the verdict, oracle checks, video, a screenshot after every step and the failure
+analysis, then the evidence files with SHA-256 and the acceptance block. It always writes a
+standalone document (print-ready A4) next to the scope's data; `--pdf` prints it with headless
+Chrome and `SHA256SUMS.txt` covers the report, the PDF, the videos and the screenshots. With
+`--artifact` it also writes a fragment: videos are not embedded, they are listed as supporting
+files in `artifact-plan.json` and referenced by relative path.
+
 Everything is filtered by scope: a story's reports list only items tagged with that story.
 Total size is kept under the budget (default 12 MB) by degrading in levels; whatever was left
 out is listed on the page. Secrets are masked before anything is embedded.
@@ -29,6 +37,7 @@ Standard library only. Pillow is optional and only shrinks images.
 Examples:
   qa_artifact_report.py --execution latest --scope current --artifact --out-dir "$SCRATCH"
   qa_artifact_report.py --execution exec-20261011T120000Z --scope US-A01-03 --standalone
+  qa_artifact_report.py --execution latest --goal-report --pdf --artifact --out-dir "$SCRATCH"
   qa_artifact_report.py --settings
   qa_artifact_report.py --selftest
 """
@@ -37,18 +46,23 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import functools
+import hashlib
 import html
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import zlib
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qa_scope  # noqa: E402
@@ -113,7 +127,134 @@ STRINGS_EN = {
     "desc_failures": "Failure report for {scope}: {count} failure(s) with steps to reproduce and evidence.",
     "summary_counts": "{passed} passed, {failed} failed, {blocked} blocked, {ne} not executed",
     "orphan": "not in the inventory", "child_scopes": "Child scopes",
+    "scope_full_label": "the full scope", "scope_full_title": "Full audit",
 }
+
+
+GOAL_STRINGS_EN = {
+    "title_goal_evidence": "Goal Evidence",
+    "INCONCLUSIVE": "INCONCLUSIVE",
+    "report_title": "Test Evidence Report",
+    "doc_class": "Goal-driven test evidence",
+    "doc_eyebrow": "Goal-driven tests",
+    "project": "Project",
+    "system_url": "System / URL",
+    "env_label": "Environment",
+    "version_build": "Version / build",
+    "start": "Start",
+    "end": "End",
+    "executor_agent": "Executor (agent and model)",
+    "execution_id": "Execution ID",
+    "total_duration": "Total duration",
+    "scope_label": "Scope",
+    "scope_goals": "{n} goal(s)",
+    "overall": "Overall result of this execution",
+    "pdf_note": "This PDF is generated from the same HTML as the report. Videos do not play in a PDF: each goal shows the opening frame, the file name, the duration and the SHA-256 hash. The files come with the evidence package.",
+    "exec_summary": "Executive summary",
+    "goals_passed_of": "{passed} of {total} goals passed",
+    "summary_text": "{fail} failed and {inc} inconclusive. Inconclusive is never counted as passed.",
+    "pass_rate": "pass rate",
+    "total_duration_short": "total duration",
+    "steps_stat": "steps, with {shots} screenshots and {videos} video(s)",
+    "goals_run": "Goals executed",
+    "col_id": "ID",
+    "col_goal": "Goal",
+    "col_verdict": "Verdict",
+    "col_steps": "Steps",
+    "col_duration": "Duration",
+    "col_detail": "Detail",
+    "see_evidence": "See evidence",
+    "back_to_summary": "Back to summary",
+    "how_verdict": "How the verdict is decided",
+    "legend_pass": "Every success line of the oracle held and no forbidden state occurred.",
+    "legend_fail": "A success line did not hold or a forbidden state occurred. The bug is recorded and linked.",
+    "legend_inc": "The step budget ran out, or an impediment left the oracle without enough evidence. A human decision is needed.",
+    "g_pass": "Passed",
+    "g_fail": "Failed",
+    "g_inc": "Inconclusive",
+    "g_ne": "Not executed",
+    "goal_n_of": "Goal {n} of {total}",
+    "steps_used": "Steps used",
+    "steps_of": "{used} of {budget} (budget)",
+    "steps_only": "{used}",
+    "window": "Window",
+    "screenshots": "Screenshots",
+    "one_per_step": "{n} (one per step)",
+    "linked_bug": "Linked bug",
+    "tracker_item": "Azure DevOps work item",
+    "role_label": "Role",
+    "entry_label": "Entry",
+    "objective": "Goal",
+    "oracle_title": "Success criteria and forbidden states",
+    "oracle_pass": "Success criteria",
+    "oracle_forbidden": "Forbidden states",
+    "o_met": "Met",
+    "o_not_met": "Not met",
+    "o_not_occurred": "Did not occur",
+    "o_violated": "Occurred (violated)",
+    "o_unverified": "Not verified",
+    "video_title": "Goal video",
+    "video_unsupported": "This browser cannot play the video.",
+    "video_print_note": "The video does not play in a PDF. See the file in the evidence package.",
+    "video_not_embedded": "Video not published with this page ({reason}). The opening frame, file name and hash are listed instead.",
+    "video_reason_size": "over the Artifact size limit",
+    "video_reason_total": "publish size limit reached",
+    "video_missing": "No video was recorded for this goal.",
+    "video_poster_alt": "Opening frame of the video {name}",
+    "timeline": "Step by step with evidence",
+    "timeline_note": "One screenshot after every step. Select a thumbnail to enlarge it.",
+    "step": "Step",
+    "checked": "Checked",
+    "target": "Target",
+    "st_ok": "Completed",
+    "st_bad": "Failed",
+    "st_warn": "No progress",
+    "no_steps": "No step was recorded for this goal.",
+    "shot_missing": "screenshot not found",
+    "shot_omitted": "image left out at this size level",
+    "failure_analysis": "Failure analysis",
+    "inc_reason": "Reason for the inconclusive result",
+    "inc_note": "It cannot be said that the system failed. Confirm with the product owner and run again with the path described or a larger budget.",
+    "expected_vs_observed": "Expected x Observed",
+    "console_summary": "Browser console (summary)",
+    "network_summary": "Network (summary)",
+    "col_method": "Method",
+    "col_url": "URL",
+    "col_http": "Status",
+    "col_ms": "Time (ms)",
+    "bug_report_file": "Bug report file",
+    "bug_severity": "Severity",
+    "finding_only": "Finding recorded, no bug report yet",
+    "annex_a": "Annex A - traceability",
+    "annex_a_title": "Evidence files and integrity",
+    "annex_a_note": "Each file has a SHA-256 hash computed when this report was generated. Recompute the hash and compare. The hashes of this document and of the PDF are in SHA256SUMS.txt, outside the document.",
+    "col_file": "File",
+    "col_kind": "Type",
+    "col_size": "Size",
+    "col_sha": "SHA-256",
+    "kind_screenshot": "Screenshot",
+    "kind_video": "Video",
+    "kind_log": "Log",
+    "kind_other": "Other",
+    "annex_b": "Annex B - environment and acceptance",
+    "annex_b_title": "Execution environment and acceptance",
+    "viewport": "Viewport",
+    "os_label": "Operating system",
+    "tool_label": "Tool",
+    "linked_bugs": "Linked bugs",
+    "acceptance": "Acceptance",
+    "acceptance_text": "I declare that I have reviewed the evidence in this report and record my acceptance, with the reservations noted for failed and inconclusive goals.",
+    "qa_responsible": "QA responsible",
+    "contract_inspector": "Contract inspector / manager",
+    "sign_name": "Name",
+    "sign_date": "Date",
+    "sign_signature": "Signature",
+    "page_word": "Page",
+    "of_word": "of",
+    "no_goals": "No goal was executed in this scope.",
+    "desc_goal_evidence": "Goal evidence report for {scope}: {passed} of {total} goals passed, with a screenshot per step and one video per goal.",
+}
+STRINGS_EN.update(GOAL_STRINGS_EN)
 
 
 def load_strings(lang: str) -> dict:
@@ -675,6 +816,17 @@ def moment_shot(evidence: list[str]) -> str | None:
     return (flagged or images)[-1]
 
 
+def scope_display_title(S: dict, scope: dict) -> str:
+    """Scope title for visible text; the built-in full scope is localized, user-given titles stay as written."""
+    if scope.get("type") == "full":
+        return S["scope_full_title"]
+    return scope.get("title") or ""
+
+
+def scope_display_label(S: dict, view: dict) -> str:
+    return S["scope_full_label"] if view["is_full"] else view["scope"]["id"]
+
+
 def scope_label(scope: dict) -> str:
     return "" if scope["type"] == "full" else qa_scope.slugify(scope["id"])
 
@@ -928,26 +1080,26 @@ def render_failures(root: Path, manifest: dict, view: dict, S: dict, imgs: Imgs,
     return title, '<main class="wrap">' + "\n".join(page.parts) + "</main>", info
 
 
-def wrap_document(title: str, body: str, lang: str, artifact: bool) -> str:
+def wrap_document(title: str, body: str, lang: str, artifact: bool, css: str = CSS) -> str:
     """Artifact fragment (no document tags) or a complete standalone document."""
     if artifact:
-        return f"<title>{esc(title)}</title>\n<style>\n{CSS}</style>\n{body}\n"
+        return f"<title>{esc(title)}</title>\n<style>\n{css}</style>\n{body}\n"
     return ("<!doctype html>\n<html lang=\"%s\">\n<head>\n<meta charset=\"utf-8\">\n"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             "<title>%s</title>\n<style>\n%s</style>\n</head>\n<body>\n%s\n</body>\n</html>\n"
-            % (esc(lang), esc(title), CSS, body))
+            % (esc(lang), esc(title), css, body))
 
 
-def build_with_budget(renderer, root, manifest, view, S, imgs, budget, lang, artifact):
+def build_with_budget(renderer, root, manifest, view, S, imgs, budget, lang, artifact, *, levels=None, css=CSS):
     chosen = None
-    for level, plan in enumerate(LEVELS):
+    for level, plan in enumerate(levels or LEVELS):
         notes = []
         if level:
             notes.append(esc(S["budget_note"].format(mb=f"{budget / 1048576:.0f}")))
         if Image is None:
             notes.append(esc(S["no_pillow"]))
         title, body, info = renderer(root, manifest, view, S, imgs, plan, level, budget, notes)
-        doc = wrap_document(title, body, lang, artifact)
+        doc = wrap_document(title, body, lang, artifact, css)
         size = len(doc.encode("utf-8"))
         info.update({"title": title, "bytes": size, "level": level, "over_budget": size > budget})
         chosen = (doc, info)
@@ -959,8 +1111,9 @@ def build_with_budget(renderer, root, manifest, view, S, imgs, budget, lang, art
 # ------------------------------------------------------------------- contract checker
 
 class _Contract(HTMLParser):
-    def __init__(self):
+    def __init__(self, allowed_files: set | None = None):
         super().__init__()
+        self.allowed_files = allowed_files or set()
         self.ids: set[str] = set()
         self.hrefs: list[str] = []
         self.tags: list[str] = []
@@ -979,7 +1132,7 @@ class _Contract(HTMLParser):
                 continue
             if v.startswith("#"):
                 self.hrefs.append(v)
-            elif v.startswith("data:image/"):
+            elif v.startswith("data:image/") or self._listed_video(tag, k, v):
                 continue
             else:
                 self.external.append(f"{tag}[{k}]={v[:50]}")
@@ -988,6 +1141,11 @@ class _Contract(HTMLParser):
         if tag not in ("img", "input", "meta", "br", "hr", "link"):
             self._stack.append((tag, a.get("class", "")))
 
+    def _listed_video(self, tag: str, attr: str, value: str) -> bool:
+        """A <video src> is allowed only when it names a video file published next to the page."""
+        return (tag == "video" and attr == "src" and value in self.allowed_files
+                and Path(value).suffix.lower() in PUBLISHABLE_VIDEO_EXT)
+
     def handle_endtag(self, tag):
         for k in range(len(self._stack) - 1, -1, -1):
             if self._stack[k][0] == tag:
@@ -995,7 +1153,7 @@ class _Contract(HTMLParser):
                 break
 
 
-def check_artifact_html(text: str, budget: int = BUDGET_BYTES) -> list[str]:
+def check_artifact_html(text: str, budget: int = BUDGET_BYTES, allowed_files: set | None = None) -> list[str]:
     """Return the list of violations of the Artifact page contract (empty when it holds)."""
     problems: list[str] = []
     size = len(text.encode("utf-8"))
@@ -1030,7 +1188,7 @@ def check_artifact_html(text: str, budget: int = BUDGET_BYTES) -> list[str]:
         problems.append("body has no explicit background token")
     if not re.search(r"padding-inline:\s*16px", text):
         problems.append("no 16px side gutter")
-    p = _Contract()
+    p = _Contract(allowed_files)
     p.feed(text)
     if p.external:
         problems.append("external resources: " + ", ".join(p.external[:5]))
@@ -1056,7 +1214,7 @@ def secrets_leaked(text: str) -> list[str]:
 
 def describe(S: dict, kind: str, view: dict, units: int = 0) -> str:
     scope = view["scope"]
-    label = scope["id"] if not view["is_full"] else "the full scope"
+    label = scope_display_label(S, view)
     if kind == "failures":
         return S["desc_failures"].format(scope=label, count=units)
     c = view["counts"]
@@ -1148,6 +1306,1151 @@ def generate(root: Path, execution: str, scope_id: str | None, categories: list[
         plan = {k: result[k] for k in ("execution", "scope", "verdict", "failures", "message", "publish", "failure_report")}
         (plan_dir / "artifact-plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         result["plan"] = str(plan_dir / "artifact-plan.json")
+    return result
+
+
+# ------------------------------------------------------- goal evidence report: model
+
+K_STARTED, K_FINISHED, K_ENV, K_SHOT = "started_at", "finished_at", "environment", "screenshot"
+K_STANDALONE, K_SUMS, K_OPASS, K_OFORB = "standalone", "sha256sums", "oracle_pass", "oracle_forbidden"
+PLAN_FILE = "artifact-plan.json"
+PW_DIR, PW_ENV = "ms-playwright", "PLAYWRIGHT_BROWSERS_PATH"
+GOAL_PREFIX = "scenario:goal:"
+SLUG_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
+AZURE_ID_RE = re.compile(r"[0-9]{1,12}")
+AZURE_EDIT_RE = re.compile(r"/edit/([0-9]{1,12})(?:[/?#]|$)")
+STEP_NUM_RE = re.compile(r"-(\d{1,4})\.\w+$")
+V_PASS, V_FAIL, V_INC, V_NE = "pass", "fail", "inc", "ne"
+ST_OK, ST_BAD, ST_WARN = "ok", "bad", "warn"
+ORACLE_NO, ORACLE_UNK = "no", "unk"
+VERDICT_META = {V_PASS: ("PASS", "g_pass"), V_FAIL: ("FAIL", "g_fail"),
+                V_INC: ("INCONCLUSIVE", "g_inc"), V_NE: ("NOT EXECUTED", "g_ne")}
+STATUS_TO_VERDICT = {"PASS": V_PASS, "FAIL": V_FAIL, "BLOCKED": V_INC}
+ICON_KEY = {V_PASS: V_PASS, V_FAIL: V_FAIL, V_INC: V_INC, V_NE: V_INC,
+            ST_OK: V_PASS, ST_BAD: V_FAIL, ST_WARN: V_INC, ORACLE_NO: V_FAIL, ORACLE_UNK: V_INC}
+STEP_OK_WORDS = {"ok", "pass", "passed", "done", "completed"}
+STEP_BAD_WORDS = {"bad", "fail", "failed", "error"}
+ORACLE_STATES = {ST_OK, ORACLE_NO, ORACLE_UNK}
+ICONS = {
+    V_PASS: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 10.4l2.8 2.8L14.2 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    V_FAIL: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M6.6 2.5h6.8l4.1 4.1v6.8l-4.1 4.1H6.6l-4.1-4.1V6.6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.2 7.2l5.6 5.6M12.8 7.2l-5.6 5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    V_INC: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6l8 14H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 8v4M10 14.2v.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+}
+GOAL_LEVELS = [(1100, 72, 60), (900, 65, 40), (720, 55, 30), (560, 45, 20), (420, 38, 10), (0, 0, 0)]
+POSTER_WIDTH = 480
+SHA_CHUNK = 1 << 20
+VIDEO_PUBLISH_MAX = 15 * 1024 * 1024 - 1
+VIDEO_PUBLISH_TOTAL = 50 * 1024 * 1024
+PUBLISHABLE_VIDEO_EXT = {".webm", ".mp4"}
+PUBLISH_VIDEO_DIR = "videos"
+PDF_TIMEOUT_S = 180
+SHA_SUMS_NAME = "SHA256SUMS.txt"
+GOAL_REPORT_HTML = "goal-evidence-report.html"
+GOAL_REPORT_PDF = "goal-evidence-report.pdf"
+KIND_GOAL = "goal-evidence"
+NO_VALUE = "\u2014"
+SEP = " \u00b7 "
+
+
+def sha256_file(path: Path, cache: dict) -> str:
+    key = str(path)
+    if key not in cache:
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(SHA_CHUNK), b""):
+                    digest.update(chunk)
+            cache[key] = digest.hexdigest()
+        except OSError:
+            cache[key] = ""
+    return cache[key]
+
+
+def short_hash(value: str) -> str:
+    return f"{value[:12]}\u2026{value[-8:]}" if len(value) > 24 else value
+
+
+def parse_ts(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def fmt_ts(value) -> str:
+    ts = parse_ts(value)
+    if ts is None:
+        return str(value or "")
+    off = ts.utcoffset()
+    total = int(off.total_seconds()) if off else 0
+    sign = "-" if total < 0 else "+"
+    total = abs(total)
+    zone = "UTC" if total == 0 else f"UTC{sign}{total // 3600:02d}:{total % 3600 // 60:02d}"
+    return f"{ts.strftime('%Y-%m-%d %H:%M:%S')} {zone}"
+
+
+def fmt_clock(value) -> str:
+    ts = parse_ts(value)
+    return ts.strftime("%H:%M:%S") if ts else str(value or "")
+
+
+def fmt_dur(seconds) -> str:
+    if seconds is None:
+        return ""
+    whole = int(round(seconds))
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
+def span_seconds(start, end):
+    a, b = parse_ts(start), parse_ts(end)
+    if a is None or b is None:
+        return None
+    try:
+        delta = (b - a).total_seconds()
+    except TypeError:
+        return None
+    return delta if delta >= 0 else None
+
+
+def as_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v or "").strip()]
+    if isinstance(value, str):
+        return [ln.strip() for ln in value.splitlines() if ln.strip()]
+    return []
+
+
+def local_file(root: Path, rel) -> Path | None:
+    """A file under the project root, or None (never follows a path out of the project)."""
+    if not rel or not isinstance(rel, str):
+        return None
+    path = Path(rel)
+    path = path if path.is_absolute() else root / path
+    try:
+        path = path.resolve()
+        path.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    return path if path.is_file() else None
+
+
+def tracker_template(root: Path) -> str:
+    cfg = read_json(root / ".qa" / "config.json", {}) or {}
+    tracker = cfg.get("tracker") if isinstance(cfg, dict) else None
+    value = tracker.get("azure_work_item_url") if isinstance(tracker, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def split_tracker(raw) -> tuple[str, str]:
+    if isinstance(raw, dict):
+        return str(raw.get("id") or ""), str(raw.get("url") or "")
+    text = str(raw or "").strip()
+    return ("", text) if text.lower().startswith("https://") else (text, "")
+
+
+def tracker_ref(raw, template: str) -> dict | None:
+    """Azure DevOps work item of a goal: an id, an https URL, or {id, url}. Anything else is ignored."""
+    wid, url = split_tracker(raw)
+    url = url if url.lower().startswith("https://") else ""
+    found = AZURE_EDIT_RE.search(url)
+    wid = wid if AZURE_ID_RE.fullmatch(wid) else (found.group(1) if found else "")
+    if not url and wid and template.startswith("https://") and "{id}" in template:
+        url = template.replace("{id}", wid)
+    return {"id": wid, "url": url} if (wid or url) else None
+
+
+def step_status(raw) -> str:
+    word = str(raw or ST_OK).lower()
+    if word in STEP_OK_WORDS:
+        return ST_OK
+    return ST_BAD if word in STEP_BAD_WORDS else ST_WARN
+
+
+def target_text(st: dict) -> str:
+    name = f'"{st["name"]}"' if st.get("name") else ""
+    return " ".join(str(p) for p in (st.get("role"), name) if p)
+
+
+def action_text(st: dict) -> str:
+    if st.get("label"):
+        return str(st["label"])
+    return " ".join(str(p) for p in (st.get("action"), target_text(st), st.get("value")) if p)
+
+
+def resolve_media(root: Path, recorded, index: dict) -> Path | None:
+    """The copy of a recorded file kept in the execution evidence, else the recorded path itself."""
+    if not recorded or not isinstance(recorded, str):
+        return None
+    kept = index.get(Path(recorded).name)
+    return local_file(root, kept) if kept else local_file(root, recorded)
+
+
+def build_step(root: Path, st: dict, n: int, index: dict, cache: dict) -> dict:
+    shot = resolve_media(root, st.get(K_SHOT), index)
+    return {"n": n, "action": action_text(st) or f"#{n}", "target": target_text(st),
+            "checked": str(st.get("checked") or st.get("expect") or ""), "time": fmt_clock(st.get("time")),
+            "status": step_status(st.get("status")), "shot": shot,
+            "shot_name": Path(str(st[K_SHOT])).name if st.get(K_SHOT) else "",
+            "size": shot.stat().st_size if shot else 0, "sha": sha256_file(shot, cache) if shot else ""}
+
+
+def fallback_steps(root: Path, item: dict, index: dict, cache: dict) -> list[dict]:
+    """Steps from the scenario's own step list when the goal file carries no trace."""
+    by_n = {}
+    for rel in item.get("evidence") or []:
+        found = STEP_NUM_RE.search(rel)
+        if found and classify(rel) == "image":
+            by_n.setdefault(int(found.group(1)), rel)
+    out = []
+    for k, text in enumerate(item.get("steps") or [], 1):
+        out.append(build_step(root, {"label": str(text), K_SHOT: by_n.get(k)}, k, index, cache))
+    return out
+
+
+def build_videos(root: Path, item: dict, run: dict, cache: dict) -> list[dict]:
+    meta = run.get("video") if isinstance(run.get("video"), dict) else {}
+    extra = {Path(str(e.get("path", ""))).name: e for e in (meta.get("extra") or []) if isinstance(e, dict)}
+    primary = Path(str(meta.get("path", ""))).name
+    paths = [local_file(root, e) for e in item.get("evidence") or [] if classify(e) == "video"]
+    paths = [p for p in paths if p]
+    if not paths and meta.get("path") and local_file(root, meta.get("path")):
+        paths = [local_file(root, meta["path"])]
+    paths.sort(key=lambda p: (p.name != primary, p.name))
+    out = []
+    for p in paths:
+        info = meta if p.name == primary else extra.get(p.name, {})
+        out.append({"name": p.name, "path": p, "size": p.stat().st_size, "sha": sha256_file(p, cache),
+                    "duration": info.get("duration_s"), "published": None, "src": None, "skip": ""})
+    return out
+
+
+def oracle_lines(texts: list[str], results, default: str) -> list[dict]:
+    results = results if isinstance(results, list) else []
+    out = []
+    for k, text in enumerate(texts):
+        res = results[k] if k < len(results) and isinstance(results[k], dict) else {}
+        state = res.get("state") if res.get("state") in ORACLE_STATES else default
+        out.append({"text": text, "state": state, "ev": str(res.get("evidence") or "")})
+    return out
+
+
+def goal_bug(root: Path, item: dict, view: dict) -> dict:
+    bug = next((b for b in view["bugs"] if b.get("bug_id") == item.get("bug_id")
+                or b.get("scenario_id") == item["id"]), None)
+    finding = next((f for f in view["findings"] if f["id"] in (item.get("finding_ids") or [])
+                    or f.get("scenario_id") == item["id"]), None)
+    bug_id = str((bug or {}).get("bug_id") or "")
+    bug_file = local_file(root, f"docs/qa/bugs/{bug_id}/BUG-REPORT.md") if SLUG_RE.fullmatch(bug_id) else None
+    severity = (bug or {}).get("severity") or (finding or {}).get("severity") or ""
+    return {"bug": bug, "finding": finding, "bug_file": bug_file, "severity": severity}
+
+
+def goal_run(goal: dict, execution_id: str) -> dict:
+    run = goal.get("last_run")
+    return run if isinstance(run, dict) and run.get("execution") == execution_id else {}
+
+
+def as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def first_text(*values) -> str:
+    return next((str(v) for v in values if v), "")
+
+
+def load_goal_file(root: Path, slug: str) -> dict:
+    return as_dict(read_json(root / ".qa" / "goals" / f"{slug}.json", {})) if SLUG_RE.fullmatch(slug) else {}
+
+
+def goal_steps(root: Path, item: dict, goal: dict, run: dict, cache: dict) -> list[dict]:
+    index = {Path(e).name: e for e in reversed(item.get("evidence") or [])}
+    trace = run.get("trace") or goal.get("trace") or []
+    steps = [build_step(root, st, k, index, cache) for k, st in enumerate(trace, 1) if isinstance(st, dict)]
+    return steps or fallback_steps(root, item, index, cache)
+
+
+def goal_oracle(goal: dict, run: dict, item: dict, verdict: str) -> tuple[list[dict], list[dict], list[str]]:
+    oracle, ores = as_dict(goal.get("oracle")), as_dict(run.get("oracle_results"))
+    default = ST_OK if verdict == V_PASS else ORACLE_UNK
+    pass_lines = as_list(oracle.get("pass")) or as_list(item.get("expected"))
+    return (oracle_lines(pass_lines, ores.get("pass"), default),
+            oracle_lines(as_list(oracle.get("forbidden")), ores.get("forbidden"), default), pass_lines)
+
+
+def build_goal(root: Path, item: dict, n: int, ctx_info: dict) -> dict:
+    """Everything the report shows about one goal, read from the manifest item and the goal file."""
+    ex, view = ctx_info["execution"], ctx_info["view"]
+    slug = item["id"][len(GOAL_PREFIX):]
+    goal = load_goal_file(root, slug)
+    run = goal_run(goal, ex.get("execution_id", ""))
+    verdict = STATUS_TO_VERDICT.get(item["status"], V_NE)
+    oracle_pass, oracle_forbidden, pass_lines = goal_oracle(goal, run, item, verdict)
+    videos = build_videos(root, item, run, ctx_info["cache"])
+    duration = span_seconds(run.get(K_STARTED), run.get(K_FINISHED))
+    if duration is None and videos:
+        duration = videos[0]["duration"]
+    ref = goal.get("azure_work_item", as_dict(ex.get(K_ENV)).get("azure_work_item"))
+    return {
+        "n": n, "code": f"G-{n:02d}", "slug": slug, "item": item, "verdict": verdict,
+        "title": first_text(goal.get("goal"), item.get("label"), slug),
+        "role": first_text(goal.get("role"), item.get("profile_id")),
+        "entry": first_text(goal.get("entry"), item.get("route")),
+        "pre": as_list(goal.get("preconditions") or item.get("preconditions")),
+        K_OPASS: oracle_pass, K_OFORB: oracle_forbidden,
+        "budget": goal.get("max_steps"), "steps": goal_steps(root, item, goal, run, ctx_info["cache"]),
+        "videos": videos, "start": run.get(K_STARTED), "end": run.get(K_FINISHED), "duration": duration,
+        "expected": first_text(run.get("expected"), "; ".join(pass_lines)),
+        "observed": first_text(run.get("observed"), item.get("actual")),
+        "console": as_list(run.get("console")), "network": [r for r in (run.get("network") or []) if isinstance(r, dict)],
+        "env": as_dict(run.get(K_ENV)), "azure": tracker_ref(ref, ctx_info["template"]),
+        **goal_bug(root, item, view),
+    }
+
+
+def goal_files(g: dict, root: Path, cache: dict) -> list[Path]:
+    """Every evidence file of a goal that exists on disk (screenshots, videos, logs, traces), once each."""
+    seen: dict[str, Path] = {}
+    for st in g["steps"]:
+        if st["shot"]:
+            seen.setdefault(str(st["shot"]), st["shot"])
+    for v in g["videos"]:
+        seen.setdefault(str(v["path"]), v["path"])
+    for rel in g["item"].get("evidence") or []:
+        p = local_file(root, rel)
+        if p:
+            seen.setdefault(str(p), p)
+    return sorted(seen.values(), key=lambda p: p.as_posix())
+
+
+def video_skip_reason(v: dict, total: int) -> str:
+    if v["path"].suffix.lower() not in PUBLISHABLE_VIDEO_EXT or v["size"] > VIDEO_PUBLISH_MAX:
+        return "video_reason_size"
+    return "video_reason_total" if total + v["size"] > VIDEO_PUBLISH_TOTAL else ""
+
+
+def plan_video_publication(goals: list[dict]) -> dict:
+    """Decide which videos travel with an Artifact (relative paths) and which are only listed."""
+    files: dict[str, str] = {}
+    total = 0
+    for g in goals:
+        for v in g["videos"]:
+            v["skip"] = video_skip_reason(v, total)
+            if v["skip"]:
+                continue
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", v["name"])
+            name = f"{PUBLISH_VIDEO_DIR}/{safe}"
+            if name in files:
+                name = f"{PUBLISH_VIDEO_DIR}/{g['slug']}-{safe}"
+            files[name] = str(v["path"])
+            v["published"] = name
+            total += v["size"]
+    return files
+
+
+GOAL_TOKENS_LIGHT = (
+    "--bg:#eef1f5;--surface:#ffffff;--fg:#14202b;--muted:#4a5a6a;--line:#d3dae2;--soft:#f3f5f8;"
+    "--accent:#1d4f7c;--accent-fg:#ffffff;--focus:#0b5fd1;--overlay:rgba(5,10,15,.88);"
+    "--pass:#12633a;--pass-bg:#e4f4ea;--pass-line:#8fcba6;"
+    "--fail:#a31622;--fail-bg:#fbe8e9;--fail-line:#e3a0a5;"
+    "--warn:#7d4a00;--warn-bg:#fdf1d6;--warn-line:#e2bd6a"
+)
+GOAL_TOKENS_DARK = (
+    "--bg:#0e141a;--surface:#161f28;--fg:#e7edf3;--muted:#a6b4c2;--line:#2b3946;--soft:#1b2630;"
+    "--accent:#8cbdea;--accent-fg:#0e141a;--focus:#8cbdea;--overlay:rgba(0,0,0,.92);"
+    "--pass:#7bdba2;--pass-bg:#11301f;--pass-line:#2d6b48;"
+    "--fail:#ff9ea6;--fail-bg:#3b1519;--fail-line:#7a3038;"
+    "--warn:#f2c46b;--warn-bg:#36290c;--warn-line:#7d6322"
+)
+
+GOAL_CSS_BASE = """
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;padding-block:20px 48px;padding-inline:16px;background:var(--bg);color:var(--fg);font:400 15px/1.55 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;overflow-wrap:anywhere}
+h1,h2,h3,h4,h5,p,dl,dd,ul,ol,figure,blockquote{margin:0;padding:0}
+h1,h2,h3,h4{text-wrap:balance;line-height:1.25}
+ul,ol{list-style:none}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,summary:focus-visible,label:focus-visible,input:focus-visible+label{outline:3px solid var(--focus);outline-offset:2px}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.875em}
+.tnum{font-variant-numeric:tabular-nums}
+.small,.muted{font-size:.8125rem;color:var(--muted)}
+.print-only{display:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.stage{max-width:1040px;margin:0 auto;display:grid;gap:1.25rem}
+.note{font-size:.8125rem;color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn-line);padding:.55rem .8rem}
+.sheet{background:var(--surface);border:1px solid var(--line);padding:clamp(1rem,3vw,2rem);display:flex;flex-direction:column;gap:1.1rem;min-width:0}
+.sheet h2{font-size:1.5rem;font-weight:700}
+.sheet h3{font-size:.8125rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-bottom:.35rem;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.sec{display:grid;gap:.6rem;min-width:0}
+.backlink{font-size:.8125rem}
+.v{display:inline-flex;align-items:center;gap:.45rem;padding:.3rem .7rem;border:1.5px solid currentColor;font-weight:700;letter-spacing:.05em;font-size:.875rem;line-height:1.2;white-space:nowrap}
+.v span{font-weight:500;letter-spacing:0}
+.v .ico{width:1.15em;height:1.15em;flex:none}
+.v-pass{color:var(--pass);background:var(--pass-bg)}
+.v-fail{color:var(--fail);background:var(--fail-bg)}
+.v-inc{color:var(--warn);background:var(--warn-bg)}
+.v.big{font-size:1.25rem;padding:.55rem 1rem}
+.ico{width:1.1em;height:1.1em;flex:none}
+.cover{gap:1.6rem}
+.cover-top{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:flex-start}
+.doc-class{font-size:.75rem;text-align:right;color:var(--muted);line-height:1.5;margin-left:auto}
+.cover h1{font-size:clamp(1.7rem,4.5vw,2.5rem);font-weight:700;letter-spacing:-.01em}
+.cover .sub{color:var(--muted);font-size:1.0625rem;margin-top:.35rem}
+.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:2px solid var(--fg)}
+.meta>div{padding:.65rem .8rem .65rem 0;border-bottom:1px solid var(--line);min-width:0}
+.meta>div.wide{grid-column:1/-1}
+.meta dt,.facts dt{font-size:.6875rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.meta dd{font-size:.9375rem;overflow-wrap:anywhere}
+.result-strip{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
+.result-strip p{font-size:.8125rem;color:var(--muted);flex-basis:100%}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(10.5rem,1fr));gap:.75rem}
+.stat{border:1px solid var(--line);padding:.7rem .85rem;display:grid;gap:.15rem;min-width:0}
+.stat b{font-size:1.75rem;line-height:1.1;font-weight:700;font-variant-numeric:tabular-nums}
+.stat span{font-size:.8125rem;color:var(--muted)}
+.stat.v-pass,.stat.v-fail,.stat.v-inc{border:1.5px solid currentColor;white-space:normal}
+.stat.v-pass span,.stat.v-fail span,.stat.v-inc span{color:inherit;font-weight:600}
+.stat .lbl{display:flex;align-items:center;gap:.4rem;font-weight:700;letter-spacing:.05em;font-size:.8125rem}
+.bar{display:flex;height:2rem;border:1px solid var(--line);overflow:hidden}
+.bar>div{display:flex;align-items:center;gap:.4rem;padding:0 .6rem;font-size:.8125rem;font-weight:700;white-space:nowrap;overflow:hidden}
+.tw{overflow-x:auto;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:.875rem}
+th,td{text-align:left;padding:.55rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.6875rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);background:var(--soft);border-bottom:1.5px solid var(--fg)}
+td:first-child{white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.files .h{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.6875rem;word-break:break-all;min-width:14rem}
+.legend{display:grid;gap:.4rem;font-size:.8125rem;color:var(--muted)}
+.legend li{display:flex;gap:.5rem;align-items:flex-start}
+.legend .v{font-size:.6875rem;padding:.1rem .45rem;flex:none}
+.goal-head{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center;padding:1rem 1.1rem;border:1.5px solid currentColor}
+.goal-head.v-pass{border-color:var(--pass-line)}.goal-head.v-fail{border-color:var(--fail-line)}.goal-head.v-inc{border-color:var(--warn-line)}
+.goal-head>div{min-width:0;flex:1 1 16rem}
+.goal-head h2{color:var(--fg)}
+.goal-head .eyebrow{color:inherit}
+.goal-head .v{background:var(--surface)}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.5rem 1rem}
+.facts dd{font-size:.9375rem;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.objective{border-left:3px solid var(--accent);padding:.15rem 0 .15rem .9rem;font-size:1.0625rem;max-width:68ch}
+.bullets{display:grid;gap:.3rem;font-size:.9375rem}
+.bullets li{padding-left:1rem;position:relative}
+.bullets li::before{content:"";position:absolute;left:.15rem;top:.62em;width:.35rem;height:.35rem;background:var(--muted)}
+.oracle{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+.oracle h4{font-size:.9375rem;margin-bottom:.4rem}
+.crit{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.2rem .55rem;padding:.55rem .6rem;border:1px solid var(--line);align-items:start}
+.crit+.crit{margin-top:.4rem}
+.crit .ico{margin-top:.15rem}
+.crit-text{font-size:.9375rem}
+.crit-meta{grid-column:2;display:flex;flex-wrap:wrap;gap:.2rem .8rem;font-size:.75rem;color:var(--muted)}
+.crit-state{font-weight:700;letter-spacing:.03em;text-transform:uppercase;font-size:.6875rem}
+.st-ok .ico,.st-ok .crit-state{color:var(--pass)}
+.st-no{background:var(--fail-bg);border:2px solid var(--fail)}
+.st-no .ico,.st-no .crit-state{color:var(--fail)}
+.st-no .crit-text{font-weight:600}
+.st-unk{background:var(--warn-bg);border-color:var(--warn-line)}
+.st-unk .ico,.st-unk .crit-state{color:var(--warn)}
+.videos{display:grid;gap:1rem}
+.video{display:grid;gap:.5rem}
+.video-live{position:relative;background:#0b1117}
+.video-live video{display:block;width:100%;max-width:100%;aspect-ratio:16/9;background:#0b1117;object-fit:contain}
+.video-live.empty{padding:1rem;color:#e7edf3;font-size:.875rem}
+.video-print{display:none;line-height:0;border:1px solid var(--line);background:#fff}
+.video-print img{width:100%;height:auto;display:block}
+.video figcaption{font-size:.8125rem;color:var(--muted);display:grid;gap:.15rem;min-width:0}
+.video figcaption .mono{color:var(--fg);font-weight:500}
+.hash{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.6875rem;color:var(--muted);overflow-wrap:anywhere;word-break:break-all}
+.callout{border:1px solid var(--line);padding:.9rem 1rem;display:grid;gap:.7rem;min-width:0}
+.callout.fail{border-color:var(--fail-line);background:var(--fail-bg)}
+.callout.inc{border-color:var(--warn-line);background:var(--warn-bg)}
+.callout h4{font-size:1rem;display:flex;gap:.45rem;align-items:center}
+.callout.fail h4{color:var(--fail)}.callout.inc h4{color:var(--warn)}
+.cmp{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+.cmp>div{background:var(--surface);border:1px solid var(--line);padding:.6rem .75rem;min-width:0}
+.cmp h5{font-size:.6875rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 .3rem}
+.cmp .obt{border:2px solid var(--fail)}
+pre{margin:0;padding:.6rem .75rem;background:var(--surface);border:1px solid var(--line);font:400 .75rem/1.55 "IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg)}
+.pill{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.75rem;padding:.05rem .4rem;border:1px solid currentColor}
+.bug-link{display:inline-flex;gap:.4rem;align-items:center;font-weight:700;flex-wrap:wrap}
+.timeline{display:grid;gap:.9rem}
+.step{display:grid;grid-template-columns:2.25rem minmax(0,1fr) minmax(0,17rem);gap:.4rem 1rem;padding:.8rem;border:1px solid var(--line);align-items:start}
+.step.st-bad{border:2px solid var(--fail);background:var(--fail-bg)}
+.step-n{width:2rem;height:2rem;border:1.5px solid var(--fg);display:grid;place-items:center;font-weight:700;font-variant-numeric:tabular-nums}
+.step-body{display:grid;gap:.35rem;min-width:0}
+.step-top{display:flex;gap:.6rem;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
+.step-top h4{font-size:1rem;flex:1 1 14rem;min-width:0}
+.chip{display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:700;padding:.15rem .5rem;border:1.5px solid currentColor;white-space:nowrap}
+.chip.ok{color:var(--pass);background:var(--pass-bg)}.chip.bad{color:var(--fail);background:var(--surface)}.chip.warn{color:var(--warn);background:var(--warn-bg)}
+.step-check{font-size:.9375rem}
+.step-meta{display:flex;flex-wrap:wrap;gap:.2rem 1rem;font-size:.8125rem;color:var(--muted)}
+.step-shot{display:grid;gap:.3rem;min-width:0}
+.shot-missing{border:1px dashed var(--muted);padding:.8rem;font-size:.75rem;color:var(--muted);text-align:center}
+figure.shot{margin:0;position:relative;min-width:0}
+figure.shot figcaption{font-size:.6875rem;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+figure.shot img{display:block;max-width:100%;width:100%;height:auto;border:1px solid var(--line);background:#fff}
+.zoom{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+figure.shot label{display:block;cursor:zoom-in;line-height:0}
+.zoom:checked+label{position:fixed;inset:0;z-index:100;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:16px;cursor:zoom-out}
+.zoom:checked+label img{max-width:100%;max-height:100%;width:auto;border:0}
+.sign-group{display:grid;gap:.5rem}
+.sign-group h4{font-size:.9375rem}
+.sign{display:grid;grid-template-columns:2fr 1fr 2fr;gap:1.2rem}
+.sign div{border-top:1.5px solid var(--fg);padding-top:.35rem;min-height:3.4rem;font-size:.75rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+@media (max-width:760px){
+.step{grid-template-columns:2rem minmax(0,1fr)}
+.step-shot{grid-column:1/-1}
+.oracle,.cmp,.meta,.sign{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+"""
+
+GOAL_CSS_PRINT = """
+@media print{
+:root:root:root{--bg:#fff;--surface:#ffffff;--fg:#14202b;--muted:#4a5a6a;--line:#d3dae2;--soft:#f3f5f8;--accent:#1d4f7c;--accent-fg:#fff;--focus:#0b5fd1;--pass:#12633a;--pass-bg:#e4f4ea;--pass-line:#8fcba6;--fail:#a31622;--fail-bg:#fbe8e9;--fail-line:#e3a0a5;--warn:#7d4a00;--warn-bg:#fdf1d6;--warn-line:#e2bd6a;color-scheme:light}
+html{font-size:12px}
+body{padding:0;font-size:12px;background:#fff}
+*{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.stage{display:block;max-width:none;margin:0}
+.sheet{break-before:page;border:0;padding:0;gap:4mm;background:#fff}
+.sheet:first-child{break-before:auto}
+.sheet h2{font-size:1.5rem}
+a{color:inherit;text-decoration:none}
+.step,.crit,.callout,.stat,tr,.video,.sign-group{break-inside:avoid}
+h2,h3,h4{break-after:avoid}
+.timeline{grid-template-columns:repeat(2,minmax(0,1fr));gap:4mm}
+.step{display:block;padding:3mm}
+.step-n{display:inline-grid;width:1.7rem;height:1.7rem;margin-bottom:1.5mm}
+.step-shot{margin-top:2mm}
+figure.shot label{cursor:default}
+.oracle,.cmp{grid-template-columns:1fr 1fr;gap:4mm}
+.video{grid-template-columns:72mm minmax(0,1fr);gap:4mm;align-items:start}
+.video-live{display:none!important}
+.video-print{display:block}
+.print-only{display:block}
+.backlink{display:none}
+.tw{overflow:visible}
+.files .h{min-width:0}
+.stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+.sign{grid-template-columns:2fr 1fr 2fr}
+}
+"""
+
+
+# ------------------------------------------------------- goal evidence report: HTML
+
+class GoalCtx(Ctx):
+    """Build context of the goal report: standalone (relative video paths) or Artifact fragment."""
+
+    def __init__(self, root: Path, S: dict, imgs: Imgs, plan: tuple, level: int, standalone: bool, html_dir: Path):
+        super().__init__(root, S, imgs, plan, level)
+        self.standalone = standalone
+        self.html_dir = html_dir
+
+    def rel_url(self, path: Path) -> str:
+        return quote(Path(os.path.relpath(path, self.html_dir)).as_posix())
+
+
+def css_string(text: str) -> str:
+    """A CSS string literal that cannot break out of a <style> block."""
+    clean = re.sub(r"[\r\n]+", " ", str(text)).replace("\\", "\\\\").replace('"', '\\"').replace("<", "\\3c ")
+    return f'"{clean}"'
+
+
+def goal_css(S: dict, footer: str) -> str:
+    page_rule = (
+        "@page{size:A4;margin:16mm 14mm 18mm 14mm;"
+        f"@bottom-left{{content:{css_string(footer)};font:400 7.5pt Arial,sans-serif;color:#4a5a6a}}"
+        f"@bottom-right{{content:{css_string(S['page_word'] + ' ')} counter(page) {css_string(' ' + S['of_word'] + ' ')} counter(pages);"
+        "font:500 7.5pt Arial,sans-serif;color:#4a5a6a}}\n"
+        "@page :first{@bottom-left{content:none}@bottom-right{content:none}}\n"
+    )
+    return (":root{" + GOAL_TOKENS_LIGHT + "}\n"
+            "@media (prefers-color-scheme: dark){:root:not([data-theme=\"light\"]){" + GOAL_TOKENS_DARK + ";color-scheme:dark}}\n"
+            ":root[data-theme=\"dark\"]{" + GOAL_TOKENS_DARK + ";color-scheme:dark}\n"
+            + GOAL_CSS_BASE + GOAL_CSS_PRINT + page_rule)
+
+
+def verdict_badge(S: dict, verdict: str, big: bool = False, suffix: str = "") -> str:
+    code, word = VERDICT_META[verdict]
+    cls = "inc" if verdict == V_NE else verdict
+    size = " big" if big else ""
+    return (f'<span class="v v-{cls}{size}">{ICONS[ICON_KEY[verdict]]}'
+            f'<b>{esc(code)}</b><span>{esc(S[word] + suffix)}</span></span>')
+
+
+def meta_dl(rows: list[tuple]) -> str:
+    cells = []
+    for r in rows:
+        wide = ' class="wide"' if len(r) > 2 else ""
+        cells.append(f"<div{wide}><dt>{esc(r[0])}</dt><dd>{esc(redact(str(r[1] or NO_VALUE)))}</dd></div>")
+    return '<dl class="meta">' + "".join(cells) + "</dl>"
+
+
+def pick_env(env: dict) -> str:
+    for key in (K_ENV, "env", "stage", "name"):
+        if env.get(key):
+            return str(env[key])
+    return ""
+
+
+def version_text(ex: dict, env: dict) -> str:
+    named = " ".join(str(env[k]) for k in ("version", "build") if env.get(k))
+    known = [str(ex[k]) for k in ("branch", "commit") if ex.get(k) and ex[k] != "NOT_AVAILABLE"]
+    commit = f"{known[0]}@{known[1][:8]}" if len(known) == 2 else ""
+    return SEP.join(x for x in (named, commit) if x)
+
+
+def goal_counts(goals: list[dict]) -> dict:
+    counts = {V_PASS: 0, V_FAIL: 0, V_INC: 0, V_NE: 0}
+    for g in goals:
+        counts[g["verdict"]] += 1
+    return counts
+
+
+def total_seconds(ex: dict, goals: list[dict]):
+    whole = span_seconds(ex.get(K_STARTED), ex.get(K_FINISHED))
+    parts = [g["duration"] for g in goals if g["duration"] is not None]
+    return whole if whole is not None else (sum(parts) if parts else None)
+
+
+def cover_html(ctx: GoalCtx, ex: dict, view: dict, goals: list[dict]) -> str:
+    S = ctx.S
+    env = ex.get(K_ENV) or {}
+    scope = view["scope"]
+    roles = ", ".join(sorted({g["role"] for g in goals if g["role"]}))
+    scope_text = SEP.join(x for x in (
+        scope_display_title(S, scope) or ("" if view["is_full"] else scope["id"]),
+        S["scope_goals"].format(n=len(goals)), roles) if x)
+    rows = [(S["project"], ex.get("project")), (S["system_url"], ex.get("base_url")),
+            (S["env_label"], pick_env(env)), (S["version_build"], version_text(ex, env)),
+            (S["start"], fmt_ts(ex.get(K_STARTED))), (S["end"], fmt_ts(ex.get(K_FINISHED))),
+            (S["execution_id"], ex.get("execution_id")), (S["total_duration"], fmt_dur(total_seconds(ex, goals))),
+            (S["executor_agent"], ex.get("executor"), True), (S["scope_label"], scope_text, True)]
+    counts = goal_counts(goals)
+    strip = "".join(verdict_badge(S, v, suffix=f"{SEP}{counts[v]}")
+                    for v in (V_PASS, V_FAIL, V_INC, V_NE) if counts[v] or v != V_NE)
+    sub = SEP.join(x for x in (ex.get("project"), pick_env(env), version_text(ex, env)) if x)
+    return (f'<section class="sheet cover" id="capa" aria-labelledby="t-capa"><div class="cover-top">'
+            f'<p class="doc-class">{esc(S["doc_class"])}</p></div>'
+            f'<div><p class="eyebrow">{esc(S["doc_eyebrow"])}{SEP}/qa-test-goal</p>'
+            f'<h1 id="t-capa">{esc(S["report_title"])}</h1><p class="sub">{esc(redact(sub))}</p></div>'
+            f'{meta_dl(rows)}<div class="result-strip"><p>{esc(S["overall"])}</p>{strip}</div>'
+            f'<p class="small">{esc(S["pdf_note"])}</p></section>')
+
+
+def sec_open(title: str) -> str:
+    """Opening of a titled block; the caller closes the <div>."""
+    return f'<div class="sec"><h3>{esc(title)}</h3>'
+
+
+def stat_box(S: dict, verdict: str, n: int) -> str:
+    code, word = VERDICT_META[verdict]
+    cls = "inc" if verdict == V_NE else verdict
+    return (f'<div class="stat v-{cls}"><span class="lbl">{ICONS[ICON_KEY[verdict]]}{esc(code)}</span>'
+            f'<b>{n}</b><span>{esc(S[word])}</span></div>')
+
+
+def summary_stats(ctx: GoalCtx, ex: dict, goals: list[dict], shown: list[str]) -> str:
+    S = ctx.S
+    counts = goal_counts(goals)
+    total = len(goals)
+    rate = f"{100 * counts[V_PASS] / total:.1f}%" if total else NO_VALUE
+    steps = sum(len(g["steps"]) for g in goals)
+    shots = sum(1 for g in goals for st in g["steps"] if st["shot"])
+    videos = sum(len(g["videos"]) for g in goals)
+    stats = "".join(stat_box(S, v, counts[v]) for v in shown)
+    return stats + (
+        f'<div class="stat"><b>{esc(rate)}</b><span>{esc(S["pass_rate"])} ({counts[V_PASS]}/{total})</span></div>'
+        f'<div class="stat"><b>{esc(fmt_dur(total_seconds(ex, goals)) or NO_VALUE)}</b><span>{esc(S["total_duration_short"])}</span></div>'
+        f'<div class="stat"><b>{steps}</b><span>{esc(S["steps_stat"].format(shots=shots, videos=videos))}</span></div>')
+
+
+def summary_html(ctx: GoalCtx, ex: dict, goals: list[dict]) -> str:
+    S = ctx.S
+    counts = goal_counts(goals)
+    shown = [v for v in (V_PASS, V_FAIL, V_INC, V_NE) if counts[v] or v != V_NE]
+    bar = "".join(f'<div class="v-{"inc" if v == V_NE else v}" style="flex:{counts[v]}">{ICONS[ICON_KEY[v]]}'
+                  f'{esc(VERDICT_META[v][0])}{SEP}{counts[v]}</div>' for v in shown if counts[v])
+    rows = [[f'<b>{esc(g["code"])}</b>', esc(redact(g["title"])), verdict_badge(S, g["verdict"]),
+             esc(steps_text(S, g)), esc(fmt_dur(g["duration"])),
+             f'<a href="#g-{g["n"]}">{esc(S["see_evidence"])}</a>'] for g in goals]
+    legend = "".join(f"<li>{verdict_badge(S, v)}<span>{esc(S[key])}</span></li>"
+                     for v, key in ((V_PASS, "legend_pass"), (V_FAIL, "legend_fail"), (V_INC, "legend_inc")))
+    headline = S["goals_passed_of"].format(passed=counts[V_PASS], total=len(goals))
+    sentence = S["summary_text"].format(fail=counts[V_FAIL], inc=counts[V_INC] + counts[V_NE])
+    table_html = (table([S["col_id"], S["col_goal"], S["col_verdict"], S["col_steps"], S["col_duration"], S["col_detail"]],
+                        rows, num_cols=(3, 4)) if rows else f'<p class="muted">{esc(S["no_goals"])}</p>')
+    return (f'<section class="sheet" id="resumo" aria-labelledby="t-resumo"><div><p class="eyebrow">{esc(S["exec_summary"])}</p>'
+            f'<h2 id="t-resumo">{esc(headline)}</h2></div><p style="max-width:68ch">{esc(sentence)}</p>'
+            f'<div class="stats">{summary_stats(ctx, ex, goals, shown)}</div>'
+            f'<div class="bar" role="img" aria-label="{esc(headline)}">{bar}</div>'
+            f'{sec_open(S["goals_run"])}{table_html}</div>'
+            f'{sec_open(S["how_verdict"])}<ul class="legend">{legend}</ul></div></section>')
+
+
+def steps_text(S: dict, g: dict) -> str:
+    used = len(g["steps"])
+    return S["steps_of"].format(used=used, budget=g["budget"]) if g["budget"] else S["steps_only"].format(used=used)
+
+
+def crit_html(S: dict, line: dict, forbidden: bool) -> str:
+    labels = {ST_OK: S["o_not_occurred"] if forbidden else S["o_met"],
+              ORACLE_NO: S["o_violated"] if forbidden else S["o_not_met"], ORACLE_UNK: S["o_unverified"]}
+    state = line["state"]
+    meta = f"<span>{esc(redact(line['ev']))}</span>" if line["ev"] else ""
+    return (f'<li class="crit st-{state}">{ICONS[ICON_KEY[state]]}<span class="crit-text">{esc(redact(line["text"]))}</span>'
+            f'<span class="crit-meta"><span class="crit-state">{esc(labels[state])}</span>{meta}</span></li>')
+
+
+def oracle_html(S: dict, g: dict) -> str:
+    cols = ((S["oracle_pass"], g[K_OPASS], False), (S["oracle_forbidden"], g[K_OFORB], True))
+    html_cols = "".join(f'<div><h4>{esc(title)}</h4><ul>{"".join(crit_html(S, ln, forb) for ln in lines)}</ul></div>'
+                        for title, lines, forb in cols)
+    return f'<div class="oracle">{html_cols}</div>'
+
+
+def poster_uri(ctx: GoalCtx, g: dict) -> str | None:
+    first = next((st["shot"] for st in g["steps"] if st["shot"]), None)
+    if first is None or ctx.plan[0] <= 0:
+        return None
+    width, quality = min(ctx.plan[0], POSTER_WIDTH), max(30, ctx.plan[1] - 15)
+    return ctx.imgs.encode(first, width, quality, 60_000)
+
+
+def video_source(ctx: GoalCtx, v: dict) -> str | None:
+    """The `src` of the player: a relative path next to the HTML, or the published Artifact path."""
+    if ctx.standalone:
+        return ctx.rel_url(v["path"])
+    return v["published"]
+
+
+def video_fig(ctx: GoalCtx, g: dict, v: dict, poster: str | None) -> str:
+    S = ctx.S
+    src = video_source(ctx, v)
+    poster_attr = f' poster="{poster}"' if poster else ""
+    if src:
+        live = (f'<div class="video-live"><video controls preload="none" playsinline src="{esc(src)}"{poster_attr} '
+                f'aria-label="{esc(v["name"])}">{esc(S["video_unsupported"])}</video></div>')
+    else:
+        reason = S.get(v["skip"], v["skip"])
+        live = f'<div class="video-live empty">{esc(S["video_not_embedded"].format(reason=reason))}</div>'
+        ctx.files_not_embedded.append((S["kind_video"], v["name"], human_bytes(v["size"])))
+    frame = (f'<img src="{poster}" alt="{esc(S["video_poster_alt"].format(name=v["name"]))}">' if poster else "")
+    dur = fmt_dur(v["duration"])
+    head = SEP.join(x for x in (v["name"], dur, "sha256 " + short_hash(v["sha"])) if x)
+    return (f'<figure class="video">{live}<div class="video-print">{frame}</div><figcaption>'
+            f'<span class="mono">{esc(head)}</span><span>{esc(human_bytes(v["size"]))}</span>'
+            f'<span class="hash">sha256 {esc(v["sha"])}</span>'
+            f'<span class="print-only small">{esc(S["video_print_note"])}</span></figcaption></figure>')
+
+
+def videos_html(ctx: GoalCtx, g: dict) -> str:
+    if not g["videos"]:
+        return f'<p class="muted small">{esc(ctx.S["video_missing"])}</p>'
+    poster = poster_uri(ctx, g)
+    return '<div class="videos">' + "".join(video_fig(ctx, g, v, poster) for v in g["videos"]) + "</div>"
+
+
+def facts_html(ctx: GoalCtx, g: dict) -> str:
+    S = ctx.S
+    shots = sum(1 for st in g["steps"] if st["shot"])
+    window = SEP.join(x for x in (fmt_clock(g["start"]), fmt_clock(g["end"])) if x)
+    cells = [(S["steps_used"], steps_text(S, g)), (S["col_duration"], fmt_dur(g["duration"])),
+             (S["window"], window.replace(SEP, " \u2192 ")), (S["screenshots"], S["one_per_step"].format(n=shots))]
+    if g["role"]:
+        cells.append((S["role_label"], g["role"]))
+    html_cells = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(redact(v))}</dd></div>" for k, v in cells if v)
+    html_cells += bug_fact(ctx, g) + tracker_fact(ctx, g)
+    return f'<dl class="facts">{html_cells}</dl>'
+
+
+def bug_fact(ctx: GoalCtx, g: dict) -> str:
+    bug = g["bug"]
+    if not bug:
+        return ""
+    ident = esc(bug["bug_id"])
+    return f'<div><dt>{esc(ctx.S["linked_bug"])}</dt><dd><a href="#bug-{ident}">{ident}</a></dd></div>'
+
+
+def tracker_fact(ctx: GoalCtx, g: dict) -> str:
+    return f'<div><dt>{esc(ctx.S["tracker_item"])}</dt><dd>{tracker_link(ctx, g["azure"])}</dd></div>' if g["azure"] else ""
+
+
+def tracker_link(ctx: GoalCtx, ref: dict) -> str:
+    label = esc("#" + ref["id"] if ref["id"] else ref["url"])
+    if ref["url"] and ctx.standalone:
+        return f'<a href="{esc(ref["url"])}" rel="noopener">{label}</a>'
+    return f"{label} <code>{esc(ref['url'])}</code>" if ref["url"] else label
+
+
+def inconclusive_html(ctx: GoalCtx, g: dict) -> str:
+    S = ctx.S
+    return (f'<div class="callout inc"><h4>{ICONS[V_INC]}{esc(S["inc_reason"])}</h4>'
+            f'<p>{esc(redact(g["observed"]))}</p><p class="small">{esc(S["inc_note"])}</p></div>')
+
+
+def goal_overview(ctx: GoalCtx, g: dict, total: int) -> str:
+    S = ctx.S
+    cls = "inc" if g["verdict"] == V_NE else g["verdict"]
+    head = (f'<header class="goal-head v-{cls}"><div><p class="eyebrow">{esc(g["code"])}{SEP}'
+            f'{esc(S["goal_n_of"].format(n=g["n"], total=total))}</p>'
+            f'<h2 id="g-{g["n"]}-h">{esc(redact(g["title"]))}</h2></div>{verdict_badge(S, g["verdict"], True)}</header>')
+    pre = "".join(f"<li>{esc(redact(p))}</li>" for p in g["pre"])
+    pre_html = f'{sec_open(S["preconditions"])}<ul class="bullets">{pre}</ul></div>' if pre else ""
+    extra = inconclusive_html(ctx, g) if g["verdict"] == V_INC else ""
+    return (f'<section class="sheet" id="g-{g["n"]}" aria-labelledby="g-{g["n"]}-h">'
+            f'<a class="backlink" href="#resumo">{esc(S["back_to_summary"])}</a>{head}{facts_html(ctx, g)}'
+            f'{sec_open(S["objective"])}<blockquote class="objective">{esc(redact(g["title"]))}</blockquote></div>'
+            f'{pre_html}{sec_open(S["oracle_title"])}{oracle_html(S, g)}</div>'
+            f'{sec_open(S["video_title"])}{videos_html(ctx, g)}</div>{extra}</section>')
+
+
+def step_shot_html(ctx: GoalCtx, g: dict, st: dict) -> str:
+    S = ctx.S
+    width, quality, _ = ctx.plan
+    if st["shot"] is None:
+        return f'<div class="shot-missing">{esc(st["shot_name"] or S["shot_missing"])}<br>{esc(S["shot_missing"])}</div>'
+    uri = ctx.imgs.encode(st["shot"], width, quality, max(40_000, 450_000 >> min(ctx.level, 3))) if width else None
+    rel = st["shot"].relative_to(ctx.root).as_posix()
+    cap = SEP.join((st["shot_name"], human_bytes(st["size"]), "sha256 " + short_hash(st["sha"])))
+    if uri is None:
+        ctx.imgs.omitted.append((rel, S["shot_omitted"]))
+        return f'<div class="shot-missing">{esc(cap)}<br>{esc(S["shot_omitted"])}</div>'
+    return ctx.page.figure(uri, cap, f'{g["code"]} {S["step"]} {st["n"]}: {redact(st["action"])}')
+
+
+def step_html(ctx: GoalCtx, g: dict, st: dict) -> str:
+    S = ctx.S
+    chip_text = {ST_OK: S["st_ok"], ST_BAD: S["st_bad"], ST_WARN: S["st_warn"]}[st["status"]]
+    chip = f'<span class="chip {st["status"]}">{ICONS[ICON_KEY[st["status"]]]}{esc(chip_text)}</span>'
+    checked = f'<p class="step-check"><b>{esc(S["checked"])}:</b> {esc(redact(st["checked"]))}</p>' if st["checked"] else ""
+    target = f'<span>{esc(S["target"])}: <code>{esc(redact(st["target"]))}</code></span>' if st["target"] else ""
+    clock = f'<span class="mono tnum">{esc(st["time"])}</span>' if st["time"] else ""
+    bad = " st-bad" if st["status"] == ST_BAD else ""
+    return (f'<li class="step{bad}"><div class="step-n" aria-hidden="true">{st["n"]}</div><div class="step-body">'
+            f'<div class="step-top"><h4><span class="sr">{esc(S["step"])} </span>{esc(redact(st["action"]))}</h4>{chip}</div>'
+            f'{checked}<p class="step-meta">{clock}{target}</p></div>'
+            f'<div class="step-shot">{step_shot_html(ctx, g, st)}</div></li>')
+
+
+def steps_sheet(ctx: GoalCtx, g: dict) -> str:
+    S = ctx.S
+    body = "".join(step_html(ctx, g, st) for st in g["steps"])
+    inner = f'<ol class="timeline">{body}</ol>' if body else f'<p class="muted">{esc(S["no_steps"])}</p>'
+    return (f'<section class="sheet" id="g-{g["n"]}-steps" aria-label="{esc(g["code"])} {esc(S["timeline"])}">'
+            f'<div><p class="eyebrow">{esc(g["code"])}{SEP}{esc(VERDICT_META[g["verdict"]][0])}</p><h2>{esc(S["timeline"])}</h2></div>'
+            f'<p class="small">{esc(S["timeline_note"])}</p>{inner}</section>')
+
+
+def network_table(S: dict, rows: list[dict]) -> str:
+    cells = [[esc(r.get("method", "")), f'<span class="mono">{esc(redact(str(r.get("url", ""))))}</span>',
+              f'<span class="pill">{esc(r.get("status", ""))}</span>', esc(r.get("ms", ""))] for r in rows[:50]]
+    return table([S["col_method"], S["col_url"], S["col_http"], S["col_ms"]], cells, num_cols=(2, 3))
+
+
+def bug_block(ctx: GoalCtx, g: dict) -> str:
+    S = ctx.S
+    lines = []
+    bug, finding = g["bug"], g["finding"]
+    sev = f"{SEP}{S['bug_severity']}: {g['severity']}" if g["severity"] else ""
+    if bug:
+        ident = esc(bug["bug_id"])
+        lines.append(f'<p><span class="bug-link">{esc(S["linked_bug"])}: <a href="#bug-{ident}">{ident}</a></span> '
+                     f'<span class="small">{esc(redact(str(bug.get("summary") or "")))}{esc(sev)}</span></p>')
+        if g["bug_file"]:
+            lines.append(f'<p class="small">{esc(S["bug_report_file"])}: {bug_file_ref(ctx, g["bug_file"])}</p>')
+    elif finding:
+        lines.append(f'<p class="small">{esc(S["finding_only"])}: <code>{esc(finding["id"])}</code>{esc(sev)}</p>')
+    if g["azure"]:
+        lines.append(f'<p class="small">{esc(S["tracker_item"])}: {tracker_link(ctx, g["azure"])}</p>')
+    return "".join(lines)
+
+
+def bug_file_ref(ctx: GoalCtx, path: Path) -> str:
+    rel = path.relative_to(ctx.root).as_posix()
+    if ctx.standalone:
+        return f'<a href="{ctx.rel_url(path)}"><code>{esc(rel)}</code></a>'
+    return f"<code>{esc(rel)}</code>"
+
+
+def failure_sheet(ctx: GoalCtx, g: dict) -> str:
+    S = ctx.S
+    console = (f'<div><h5 class="small" style="margin:0 0 .3rem">{esc(S["console_summary"])}</h5>'
+               f'{pre(chr(10).join(g["console"]), ctx.plan[2] or 10)}</div>') if g["console"] else ""
+    net = (f'<div><h5 class="small" style="margin:0 0 .3rem">{esc(S["network_summary"])}</h5>'
+           f'{network_table(S, g["network"])}</div>') if g["network"] else ""
+    return (f'<section class="sheet" id="g-{g["n"]}-failure" aria-label="{esc(g["code"])} {esc(S["failure_analysis"])}">'
+            f'<div><p class="eyebrow">{esc(g["code"])}{SEP}FAIL</p><h2>{esc(S["failure_analysis"])}</h2></div>'
+            f'<div class="callout fail"><h4>{ICONS[V_FAIL]}{esc(S["expected_vs_observed"])}</h4><div class="cmp">'
+            f'<div><h5>{esc(S["expected"])}</h5><p>{esc(redact(g["expected"]))}</p></div>'
+            f'<div class="obt"><h5>{esc(S["observed"])}</h5><p>{esc(redact(g["observed"]))}</p></div></div>'
+            f'{console}{net}{bug_block(ctx, g)}</div></section>')
+
+
+def goal_sheets(ctx: GoalCtx, g: dict, total: int) -> str:
+    out = goal_overview(ctx, g, total) + steps_sheet(ctx, g)
+    return out + (failure_sheet(ctx, g) if g["verdict"] == V_FAIL else "")
+
+
+def file_kind(S: dict, path: Path) -> str:
+    kind = classify(path.name)
+    return {"image": S["kind_screenshot"], "video": S["kind_video"], "text": S["kind_log"]}.get(kind, S["kind_other"])
+
+
+def annex_a(ctx: GoalCtx, goals: list[dict], notes: list[str], files: list[Path], cache: dict) -> str:
+    S = ctx.S
+    rows = []
+    for k, p in enumerate(files, 1):
+        rel = p.relative_to(ctx.root).as_posix()
+        rows.append([str(k), f'<span class="mono">{esc(rel)}</span>', f'<span style="white-space:nowrap">{esc(file_kind(S, p))}</span>',
+                     esc(human_bytes(p.stat().st_size)), f'<span class="h">{esc(sha256_file(p, cache))}</span>'])
+    note_html = "".join(f'<p class="note">{n}</p>' for n in notes)
+    body = table(["#", S["col_file"], S["col_kind"], S["col_size"], S["col_sha"]], rows, num_cols=(0, 3))
+    return (f'<section class="sheet" id="anexo-a" aria-labelledby="t-anexo-a"><div><p class="eyebrow">{esc(S["annex_a"])}</p>'
+            f'<h2 id="t-anexo-a">{esc(S["annex_a_title"])}</h2></div>{note_html}'
+            f'<p class="small" style="max-width:70ch">{esc(S["annex_a_note"])}</p><div class="files">{body}</div></section>')
+
+
+def environment_rows(ctx: GoalCtx, ex: dict, goals: list[dict]) -> list[tuple]:
+    S = ctx.S
+    env = next((g["env"] for g in goals if g["env"]), {})
+    browser = " ".join(x for x in (ex.get("browser"), ex.get("browser_version")) if x and x != "NOT_AVAILABLE")
+    return [(S["browser"], env.get("browser") or browser), (S["viewport"], env.get("viewport")),
+            (S["os_label"], env.get("os") or f"{platform.system()} {platform.release()}"),
+            (S["tool_label"], f"qa-squad{SEP}qa_artifact_report {GENERATOR_VERSION}"),
+            (S["base_url"], ex.get("base_url"))]
+
+
+def bug_cards(ctx: GoalCtx, goals: list[dict]) -> str:
+    S = ctx.S
+    cards = []
+    for g in goals:
+        bug = g["bug"]
+        if not bug:
+            continue
+        ident = esc(bug["bug_id"])
+        detail = SEP.join(x for x in (S["bug_severity"] + ": " + g["severity"] if g["severity"] else "",
+                                        str(bug.get("classification") or "")) if x)
+        path = f'<p class="small">{esc(S["bug_report_file"])}: {bug_file_ref(ctx, g["bug_file"])}</p>' if g["bug_file"] else ""
+        cards.append(f'<div class="callout" id="bug-{ident}" tabindex="-1"><h4>{ident}{SEP}{esc(redact(str(bug.get("summary") or "")))}</h4>'
+                     f'<p class="small">{esc(detail)}</p>{path}</div>')
+    return "".join(cards)
+
+
+def signatory(S: dict, role: str) -> str:
+    boxes = "".join(f"<div>{esc(S[k])}</div>" for k in ("sign_name", "sign_date", "sign_signature"))
+    return f'<div class="sign-group"><h4>{esc(role)}</h4><div class="sign">{boxes}</div></div>'
+
+
+def annex_b(ctx: GoalCtx, ex: dict, goals: list[dict]) -> str:
+    S = ctx.S
+    env = meta_dl(environment_rows(ctx, ex, goals))
+    cards = bug_cards(ctx, goals)
+    bugs = f'{sec_open(S["linked_bugs"])}{cards}</div>' if cards else ""
+    sign = signatory(S, S["qa_responsible"]) + signatory(S, S["contract_inspector"])
+    return (f'<section class="sheet" id="anexo-b" aria-labelledby="t-anexo-b"><div><p class="eyebrow">{esc(S["annex_b"])}</p>'
+            f'<h2 id="t-anexo-b">{esc(S["annex_b_title"])}</h2></div>'
+            f'<div class="sec"><h3>{esc(S["environment"])}</h3>{env}</div>{bugs}'
+            f'{sec_open(S["acceptance"])}<p class="small" style="max-width:70ch">{esc(S["acceptance_text"])}</p>'
+            f'{sign}</div></section>')
+
+
+def render_goal_evidence(root: Path, manifest: dict, view: dict, S: dict, imgs: Imgs, plan: tuple, level: int,
+                         budget: int, notes: list[str], *, goals: list[dict], opts: dict) -> tuple[str, str, dict]:
+    ctx = GoalCtx(root, S, imgs, plan, level, opts[K_STANDALONE], opts["html_dir"])
+    imgs.omitted.clear()
+    ex = manifest.get("execution") or {}
+    title = page_title(S, "title_goal_evidence", view["scope"])
+    parts = [cover_html(ctx, ex, view, goals), summary_html(ctx, ex, goals)]
+    parts += [goal_sheets(ctx, g, len(goals)) for g in goals]
+    parts.append(annex_a(ctx, goals, notes, opts["files"], opts["cache"]))
+    parts.append(annex_b(ctx, ex, goals))
+    body = '<main class="stage">' + "\n".join(parts) + "</main>"
+    info = {"images_embedded": ctx.page.embedded, "omitted": list(imgs.omitted),
+            "files_not_embedded": ctx.files_not_embedded}
+    return title, body, info
+
+
+# ---------------------------------------------------------------------- PDF (headless Chrome)
+
+CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                "microsoft-edge", "msedge", "chrome")
+PLAYWRIGHT_BROWSER_GLOBS = (
+    "chromium-*/chrome-linux*/chrome",
+    "chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell",
+    "chromium_headless_shell-*/chrome-linux*/headless_shell",
+    "chromium-*/chrome-win*/chrome.exe",
+    "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+)
+HEADLESS_SHELL_NAMES = ("chrome-headless-shell", "headless_shell")
+
+
+def playwright_cache_dirs(env: dict) -> list[Path]:
+    dirs = []
+    if env.get(PW_ENV) and env[PW_ENV] != "0":
+        dirs.append(Path(env[PW_ENV]))
+    home = Path(env["HOME"]) if env.get("HOME") else Path.home()
+    dirs += [home / ".cache" / PW_DIR, home / "Library" / "Caches" / PW_DIR]
+    if env.get("LOCALAPPDATA"):
+        dirs.append(Path(env["LOCALAPPDATA"]) / PW_DIR)
+    return dirs
+
+
+def find_chrome(env: dict | None = None) -> str | None:
+    """A Chrome, Chromium or Edge binary: $CHROME_BIN, the PATH, then the Playwright browser cache."""
+    env = os.environ if env is None else env
+    explicit = env.get("CHROME_BIN")
+    if explicit:
+        found = shutil.which(explicit)
+        return found or (explicit if Path(explicit).is_file() else None)
+    for name in CHROME_NAMES:
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return found
+    for cache in playwright_cache_dirs(env):
+        for pattern in PLAYWRIGHT_BROWSER_GLOBS:
+            hits = sorted(cache.glob(pattern), reverse=True)
+            if hits:
+                return str(hits[0])
+    return None
+
+
+def chrome_command(chrome: str, html_path: Path, pdf_path: Path, profile: str) -> list[str]:
+    cmd = [chrome]
+    if Path(chrome).name not in HEADLESS_SHELL_NAMES:
+        cmd.append("--headless=new")
+    cmd += ["--no-sandbox", "--disable-gpu", "--no-pdf-header-footer", f"--user-data-dir={profile}",
+            f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()]
+    return cmd
+
+
+def pdf_from_html(html_path: Path, pdf_path: Path, chrome: str | None = None, env: dict | None = None,
+                  timeout: int = PDF_TIMEOUT_S) -> dict:
+    """Print an HTML file to an A4 PDF with headless Chrome. Never raises: the result says what happened."""
+    chrome = chrome or find_chrome(env)
+    if not chrome:
+        return {"status": "skipped", "path": None,
+                "reason": "no Chrome, Chromium or Edge found (set CHROME_BIN to a browser binary)"}
+    pdf_path = Path(pdf_path)
+    pdf_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as profile:
+        try:
+            proc = subprocess.run(chrome_command(chrome, Path(html_path), pdf_path, profile),
+                                  capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"status": "failed", "path": None, "browser": chrome, "reason": f"{type(exc).__name__}: {exc}"}
+    if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [f"exit code {proc.returncode}"]
+        return {"status": "failed", "path": None, "browser": chrome, "reason": tail[0][:200]}
+    return {"status": "ok", "path": str(pdf_path), "browser": chrome, "reason": ""}
+
+
+def write_sha256sums(target_dir: Path, paths: list[Path], cache: dict) -> Path:
+    """`sha256sum -c` compatible list (paths relative to the folder that holds the file)."""
+    lines = []
+    for p in sorted({Path(x).resolve() for x in paths}, key=lambda x: x.as_posix()):
+        digest = sha256_file(p, cache)
+        if digest:
+            lines.append(f"{digest}  {Path(os.path.relpath(p, target_dir)).as_posix()}")
+    out = target_dir / SHA_SUMS_NAME
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+# ------------------------------------------------------------- goal evidence report: outputs
+
+def goal_footer(ex: dict) -> str:
+    env = pick_env(ex.get(K_ENV) or {})
+    return SEP.join(x for x in (ex.get("project"), ex.get("execution_id"), env) if x)
+
+
+def collect_goals(root: Path, manifest: dict, view: dict, cache: dict) -> list[dict]:
+    info = {"cache": cache, "execution": manifest.get("execution") or {}, "view": view, "template": tracker_template(root)}
+    items = [i for i in view["items"] if i["id"].startswith(GOAL_PREFIX)]
+    return [build_goal(root, item, n, info) for n, item in enumerate(items, 1)]
+
+
+def merge_artifact_plan(plan_path: Path, base: dict, entry: dict) -> dict:
+    """Add the goal report to artifact-plan.json, keeping the entries the scope reports wrote."""
+    plan = read_json(plan_path, None)
+    plan = plan if isinstance(plan, dict) else dict(base, publish=[])
+    plan["publish"] = [p for p in plan.get("publish", []) if p.get("kind") != KIND_GOAL] + [entry]
+    plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return plan
+
+
+def emit_goal_html(job: dict, as_artifact: bool, target: Path, video_files: dict) -> dict:
+    """Render the goal report once (standalone document or Artifact fragment) and describe the file."""
+    goals, view, S = job["goals"], job["view"], job["S"]
+    opts = {K_STANDALONE: not as_artifact, "html_dir": target.parent, "files": job["files"], "cache": job["cache"]}
+    renderer = functools.partial(render_goal_evidence, goals=goals, opts=opts)
+    doc, info = build_with_budget(renderer, job["root"], job["manifest"], view, S, job["imgs"], job["budget"],
+                                  job["lang"], as_artifact, levels=GOAL_LEVELS, css=job["css"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(doc, encoding="utf-8")
+    entry = {"kind": KIND_GOAL, "mode": "artifact" if as_artifact else K_STANDALONE, "file_path": str(target),
+             "title": info["title"], "bytes": info["bytes"], "level": info["level"],
+             "over_budget": info["over_budget"], "images_embedded": info["images_embedded"],
+             "omitted": [p for p, _ in info["omitted"]][:200]}
+    if as_artifact:
+        counts = job["counts"]
+        label = scope_display_label(S, view)
+        entry.update({
+            "icon": "report", "files": video_files,
+            "description": S["desc_goal_evidence"].format(scope=label, passed=counts[V_PASS], total=len(goals)),
+            "videos_not_published": [{"name": v["name"], "sha256": v["sha"], "reason": v["skip"]}
+                                     for g in goals for v in g["videos"] if not v["published"]],
+            "contract": check_artifact_html(doc, job["budget"], allowed_files=set(video_files))})
+    return entry
+
+
+def goal_job(root: Path, execution: str, scope_id: str | None, categories: list[str] | None,
+             budget: int, lang: str) -> dict:
+    execution, manifest = find_manifest(root, execution)
+    view = build_view(manifest, scope_id, categories)
+    S = load_strings(lang)
+    cache: dict = {}
+    goals = collect_goals(root, manifest, view, cache)
+    files = sorted({p for g in goals for p in goal_files(g, root, cache)}, key=lambda p: p.as_posix())
+    return {"root": root, "execution": execution, "manifest": manifest, "view": view, "S": S, "cache": cache,
+            "goals": goals, "files": files, "counts": goal_counts(goals), "budget": budget, "lang": lang,
+            "imgs": Imgs(), "css": goal_css(S, goal_footer(manifest.get("execution") or {}))}
+
+
+def generate_goal_report(root: Path, execution: str, scope_id: str | None, categories: list[str] | None, *,
+                         artifact: bool, out_dir: Path | None, budget: int, lang: str, pdf: bool = False,
+                         chrome: str | None = None) -> dict:
+    """Goal evidence report: standalone HTML (+ PDF, SHA256SUMS.txt) and, optionally, the Artifact fragment."""
+    root = Path(root).resolve()
+    job = goal_job(root, execution, scope_id, categories, budget, lang)
+    view, counts, execution = job["view"], job["counts"], job["execution"]
+    scope_dir = root / "docs" / "qa" / "executions" / execution / qa_scope.scope_dir_name(view["scope"]["id"])
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    result: dict = {"execution": execution, "kind": KIND_GOAL, "language": lang, "goals": len(job["goals"]),
+                    "scope": {k: view["scope"].get(k) for k in ("type", "id", "title")}, "counts": counts,
+                    "publish": [], "files": [], "pdf": None, K_SUMS: None}
+    standalone = emit_goal_html(job, False, scope_dir / GOAL_REPORT_HTML, {})
+    result["files"].append(standalone)
+    sums = [Path(standalone["file_path"]), *job["files"]]
+    if pdf:
+        result["pdf"] = pdf_from_html(Path(standalone["file_path"]), scope_dir / GOAL_REPORT_PDF, chrome)
+        sums += [Path(result["pdf"]["path"])] if result["pdf"]["status"] == "ok" else []
+    result[K_SUMS] = str(write_sha256sums(scope_dir, sums, job["cache"]))
+    if artifact:
+        plan_dir = out_dir or root / ".qa" / "artifacts" / execution
+        name = f"qa-goal-evidence-{qa_scope.slugify(view['scope']['id'])}.html"
+        entry = emit_goal_html(job, True, plan_dir / name, plan_video_publication(job["goals"]))
+        result["publish"].append(entry)
+        result["files"].append(entry)
+        base = {"execution": execution, "scope": result["scope"], "verdict": view["verdict"], "failures": 0,
+                "message": "", "failure_report": None}
+        merge_artifact_plan(plan_dir / PLAN_FILE, base, entry)
+        result["plan"] = str(plan_dir / PLAN_FILE)
+    result["message"] = (f"goal evidence: {len(job['goals'])} goal(s): {counts[V_PASS]} pass, "
+                         f"{counts[V_FAIL]} fail, {counts[V_INC]} inconclusive.")
     return result
 
 
@@ -1369,6 +2672,32 @@ def selftest() -> int:
 
 # -------------------------------------------------------------------------------- main
 
+def run_goal_report(a, root: Path, artifact: bool, budget: int, lang: str) -> int:
+    result = generate_goal_report(root, a.execution, a.scope, a.category, artifact=artifact,
+                                  out_dir=Path(a.out_dir).resolve() if a.out_dir else None,
+                                  budget=budget, lang=lang, pdf=a.pdf)
+    if a.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"scope {result['scope']['id']}: {result['message']}")
+        for f in result["files"]:
+            print(f"  {f['mode']:<10} {f['bytes'] / 1048576:.2f} MB level {f['level']}  {f['file_path']}")
+        print_pdf_line(result["pdf"])
+        print(f"  sha256     {result['sha256sums']}")
+        if result.get("plan"):
+            print(f"plan: {result['plan']}")
+    if result["pdf"] and result["pdf"]["status"] == "skipped":
+        print(f"PDF skipped: {result['pdf']['reason']}", file=sys.stderr)
+    return 3 if any(f["over_budget"] for f in result["files"]) else 0
+
+
+def print_pdf_line(pdf: dict | None) -> None:
+    if pdf and pdf["status"] == "ok":
+        print(f"  pdf        {pdf['path']}")
+    elif pdf:
+        print(f"  pdf        {pdf['status']}: {pdf['reason']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate the QA evidence and failure reports of one scope.")
     ap.add_argument("--execution", default="latest", help="execution ID, or 'latest' (default)")
@@ -1384,6 +2713,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
     ap.add_argument("--lang", help="report language (default: settings; en or pt-BR)")
     ap.add_argument("--budget-mb", type=float, help="size budget per page in MB (max 12)")
+    ap.add_argument("--goal-report", action="store_true",
+                    help="render the goal evidence report of /qa-test-goal (screenshot per step, video per goal) "
+                         "instead of the scope evidence and failure reports")
+    ap.add_argument("--pdf", action="store_true",
+                    help="with --goal-report: also print the report to an A4 PDF with headless Chrome "
+                         "(skipped with one line when no Chrome, Chromium or Edge is found)")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     ap.add_argument("--settings", action="store_true", help="print the resolved artifact settings and exit")
     ap.add_argument("--selftest", action="store_true", help="run the built-in checks and exit")
@@ -1420,6 +2755,10 @@ def main(argv: list[str] | None = None) -> int:
     standalone = a.standalone or not artifact
     if a.artifact and not settings["publish"]:
         print(f"note: artifact output is disabled ({settings['reason']}); writing standalone documents.", file=sys.stderr)
+    if a.pdf and not a.goal_report:
+        ap.error("--pdf needs --goal-report")
+    if a.goal_report:
+        return run_goal_report(a, root, artifact, budget, lang)
     result = generate(root, a.execution, a.scope, a.category, artifact=artifact, standalone=standalone,
                       out_dir=Path(a.out_dir).resolve() if a.out_dir else None, budget=budget, lang=lang)
     over = [f for f in result["files"] if f["over_budget"]]
