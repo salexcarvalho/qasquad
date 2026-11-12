@@ -58,8 +58,10 @@ is active. Credential files may be read when authorized, but not modified during
 ## Playwright MCP is not available
 
 The plugin declares the server in `plugins/qa-squad/.mcp.json` and runs it via
-`npx -y @playwright/mcp@latest`. Confirm that Node.js and `npx` are installed and that the
-browser environment is available. Without it, browser-driven passes must be recorded as
+`npx -y @playwright/mcp@0.0.85 --caps=devtools` (pinned; the `devtools` capability is what enables
+`browser_start_video` and `browser_stop_video`). Confirm that Node.js and `npx` are installed and
+that the browser environment is available. If the video tools are missing, check that the server
+started with `--caps=devtools`; goals still run without a video and the report says so. Without it, browser-driven passes must be recorded as
 `blocked`, not silently skipped.
 
 ## The English-only gate reports a false positive

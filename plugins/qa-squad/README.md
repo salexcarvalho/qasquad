@@ -8,9 +8,9 @@ Visible components:
 - `skills/` — 29 QA skills
 - `hooks/` — deterministic coverage and secret-safety hooks
 - `bin/qa-cli` — project-local QA coverage ledger CLI
-- `bin/qa_artifact_report.py` — evidence and failure report generator (Artifact-ready HTML)
+- `bin/qa_artifact_report.py` — evidence, failure and goal evidence report generator (Artifact-ready HTML, A4 PDF)
 - `bin/qa_scope.py` — user stories, scope resolution and report settings
-- `.mcp.json` — Playwright MCP browser integration
+- `.mcp.json` — Playwright MCP browser integration (`@playwright/mcp@0.0.85` with `--caps=devtools` for the video tools)
 - `.claude-plugin/plugin.json` — plugin metadata
 
 Test locally from the repository root:

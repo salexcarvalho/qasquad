@@ -65,6 +65,22 @@ never `PASS`. Results go into the `scenarios` category (`INCONCLUSIVE` is record
 `blocked`), failures become findings and bugs, and the evidence and failure Artifacts are
 published as usual.
 
+Every goal also leaves its own evidence: a screenshot after every step and one `.webm` video per
+goal (recorded with `browser_start_video` / `browser_stop_video`, which the plugin's Playwright MCP
+exposes through `--caps=devtools`; the plugin pins `@playwright/mcp@0.0.85`). The run ends with a
+**goal evidence report** (`--goal-report`): a cover with project, system, environment, version,
+period, executor and execution ID; an executive summary; per goal the verdict (icon, code and
+text, never colour only), the oracle lines each checked or violated, the video player, the step
+timeline with a thumbnail you can enlarge, the expected-versus-observed block, a console and
+network summary and the link to the bug (and to the Azure DevOps work item when the goal names
+one); then the evidence files with SHA-256 and size, the environment, and an acceptance block with
+two signatories (QA responsible and contract inspector or manager). The same HTML prints to an A4
+PDF (`--pdf`, headless Chrome; skipped with one line when no Chrome, Chromium or Edge is found)
+with cover alone, one page break per goal and "Page X of Y" in the footer, and `SHA256SUMS.txt`
+covers the report, the PDF, the videos and the screenshots. Videos are not embedded in the HTML:
+the standalone report references them by relative path, and the Artifact lists them as supporting
+files. Details: [docs/artifacts-and-scope.md](artifacts-and-scope.md#goal-evidence-report).
+
 ```text
 /qa-squad:qa-test-goal "a registered user can place an order and sees the confirmation"
 /qa-squad:qa-test-goal --goals goals/checkout.md --runs 3 --story US-A01-03
