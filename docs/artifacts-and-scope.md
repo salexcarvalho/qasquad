@@ -56,6 +56,40 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --execution <id|latest
 `file_path`, the `icon` word and a one-sentence `description` to pass to the Artifact tool.
 Republish the same `file_path` to update an artifact.
 
+### Goal evidence report
+
+`qa-test-goal` ends with a third report kind:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --execution <id|latest> --scope current \
+  --goal-report --pdf --artifact --out-dir "<scratchpad>/qa-artifacts" --json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--goal-report` | render the goal evidence report instead of the evidence and failure reports |
+| `--pdf` | also print it to an A4 PDF with headless Chrome (`$CHROME_BIN`, then `google-chrome`, `chromium`, `chromium-browser`, `microsoft-edge`, then the Playwright browser cache). With none found the PDF is skipped with one line on stderr and the exit code stays 0 |
+| `--artifact` | additionally write the Artifact fragment `qa-goal-evidence-<scope>.html` and merge it into `artifact-plan.json` |
+
+Outputs, in `docs/qa/executions/<id>/scope-<id>/` (always): `goal-evidence-report.html` (a complete,
+print-ready document), `goal-evidence-report.pdf` (with `--pdf`) and `SHA256SUMS.txt`
+(`sha256sum -c` compatible, covering the HTML, the PDF, the videos and the screenshots).
+
+Data comes from the execution manifest (the scenarios `scenario:goal:<slug>` with their evidence)
+and from `.qa/goals/<slug>.json`, whose `last_run` object carries the per-step trace (action, what
+was checked, time, status, screenshot), the oracle results, the video duration and, for a failure,
+the expected and observed text, a console excerpt and a network summary. The goal file also takes
+an optional `azure_work_item` (an id, an `https` URL or `{id, url}`). A failing goal always links
+the local `BUG-REPORT.md` and the severity, and the work item when one is known.
+
+Videos are never base64-embedded. The standalone page references each `.webm` by a relative path
+into `docs/qa/evidence/`. For the Artifact, the plan entry has a `files` map (published path such as
+`videos/<slug>.webm` to the source file) that goes to the Artifact tool's `files` parameter, and the
+page plays them from those relative paths. A video over 15 MB, or beyond the 50 MB of videos kept
+under the 64 MB publish limit, is left out of `files`, listed in `videos_not_published`, and the page
+shows its opening frame, file name, duration and hash instead. In the PDF the player is replaced by
+that opening frame, the file name, the duration and the SHA-256.
+
 Artifact pages follow the platform contract: no `<!doctype>`, `<html>`, `<head>` or `<body>`
 tags; a `<title>` of two to four words first (`QA Evidence US-A01-03`, `QA Failures US-A01-03`);
 color tokens on `:root` with a dark variant under `prefers-color-scheme` and
