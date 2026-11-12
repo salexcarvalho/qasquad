@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented here.
 
+## [Unreleased]
+
+## [0.7.0] - 2026-11-12
+
+### Added
+- Goal evidence report for `/qa-squad:qa-test-goal` (`qa_artifact_report.py --goal-report`): cover,
+  executive summary, per goal the verdict (icon, code and text), oracle lines checked or violated,
+  video player, step timeline with enlargeable screenshots, expected versus observed, console and
+  network summary and the bug link (local `BUG-REPORT.md`, severity, and the Azure DevOps work item
+  when the goal names one), then the evidence files with SHA-256 and size, the environment and an
+  acceptance block with two signatories (QA responsible, contract inspector or manager). Labels
+  follow `--lang` / `artifacts.language` (English built in, Portuguese in `templates/i18n.json`).
+- A screenshot after every step and one `.webm` video per goal (`browser_start_video` /
+  `browser_stop_video`); `qa-test-goal` records them as evidence and the goal file gets a `last_run`
+  object and an optional `azure_work_item`.
+- `--pdf`: prints the goal evidence report to an A4 PDF with headless Chrome (cover alone, one page
+  break per goal, "Page X of Y"), skipped with one line when no Chrome, Chromium or Edge is found;
+  `SHA256SUMS.txt` covers the report, the PDF, the videos and the screenshots.
+- Videos are referenced by relative path, never base64-embedded: the Artifact plan lists them in a
+  `files` map, and a video over the Artifact limits is left out and listed with its hash.
+
+### Changed
+- Playwright MCP is pinned to `@playwright/mcp@0.0.85` and started with `--caps=devtools`, which
+  enables the video tools. `qa-test-goal` now writes screenshots straight to `.qa/evidence/`.
+- `check_artifact_html` accepts a `<video src>` only when it names a published `.webm` or `.mp4`
+  listed in the files map.
+
 ## [0.6.0] - 2026-11-10
 
 ### Added

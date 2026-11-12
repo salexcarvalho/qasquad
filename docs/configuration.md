@@ -57,6 +57,26 @@ run with `--no-artifact`, or for a shell with `QA_SQUAD_NO_ARTIFACT=1`. `languag
 `python3 "${CLAUDE_PLUGIN_ROOT}/bin/qa_artifact_report.py" --settings` prints the resolved
 values and the reason. See [artifacts-and-scope.md](artifacts-and-scope.md).
 
+## Playwright MCP and the goal evidence report
+
+`plugins/qa-squad/.mcp.json` starts `npx -y @playwright/mcp@0.0.85 --caps=devtools`. The version is
+pinned so that tool names and parameters do not change under a run, and `--caps=devtools` enables
+the video tools (`browser_start_video`, `browser_stop_video`) used by `qa-test-goal`. Explicit file
+names given to the screenshot and video tools are resolved against the workspace root.
+
+Optional keys that only the goal evidence report reads:
+
+```json
+{
+  "tracker": { "azure_work_item_url": "https://dev.azure.com/<org>/<project>/_workitems/edit/{id}" }
+}
+```
+
+`tracker.azure_work_item_url` turns the id in a goal's `azure_work_item` field (or in
+`--environment azure_work_item=<id>` on `execution-start`) into a link. Only `https` URLs are used.
+`CHROME_BIN` points the PDF step at a Chrome, Chromium or Edge binary when none is on the PATH or in
+the Playwright browser cache.
+
 ## Project context
 
 `.qa/project-context.md` carries domain knowledge without contaminating the generic agents.
