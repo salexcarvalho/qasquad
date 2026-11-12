@@ -4,6 +4,8 @@ All notable changes to this project will be documented here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-12
+
 ### Added
 - Goal evidence report for `/qa-squad:qa-test-goal` (`qa_artifact_report.py --goal-report`): cover,
   executive summary, per goal the verdict (icon, code and text), oracle lines checked or violated,
